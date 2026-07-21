@@ -24,9 +24,9 @@ The driver is a single Python 3.10+ standard-library script. The planner and wri
 - Claude Code backend with Claude Sonnet 5 as the zero-configuration default
 - OMP and Codex CLI backends for users who prefer them
 - Parallel page generation with SHA-256 incremental rebuilds
-- Source citation linting
+- Source citation linting, enforced as a blocking gate before publishing
 - Optional translation
-- Offline `wiki.html` with vendored assets
+- Offline `wiki.html` with vendored assets, a sanitized (DOMPurify) viewer, and third-party license notices
 - Guarded GitHub Pages publishing
 - GitHub Wiki export with Home mapping, sidebar generation, and commit-pinned source citations
 

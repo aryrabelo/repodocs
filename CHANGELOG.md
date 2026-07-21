@@ -15,6 +15,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Claude Code with `claude-sonnet-5` is now the default backend. Running `repodocs-all .` after authenticating Claude Code requires no environment variables. OMP and Codex remain supported via `REPODOCS_BACKEND=omp|codex`.
 - Distribution now uses standard Python packaging with `uvx`/`uv tool install`, exposing `repodocs` and `repodocs-all` console commands without a persistent source clone.
 
+### Security
+
+- `publish` and `publish-wiki` now **block** on missing or invalid source citations: a cited path that does not exist, escapes the repository (path traversal or symlink), has an out-of-range or reversed line range, or carries a label whose path/range disagrees with its link target. Previously these were warnings only; the source-cited guarantee is now enforced before any push.
+- The offline HTML viewer sanitizes rendered Markdown with DOMPurify, blocking script injection, event-handler attributes, and `javascript:` URLs originating from repository-derived page content.
+- Repository scanning no longer ingests RepoDocs' own generated output (`repo-docs/`, `graphify-out/`, and the configured `--out` directory under any name) or files reached through symlinks that escape the repository, so a rerun cannot pull generated assets or out-of-tree files into a wiki.
+- Vendored offline assets ship with a `THIRD-PARTY-NOTICES.txt` reproducing the marked, Mermaid, highlight.js, and DOMPurify licenses so published artifacts carry attribution.
+
 ## [0.1.0] - 2026-07-21
 
 ### Added
