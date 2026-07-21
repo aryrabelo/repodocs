@@ -35,14 +35,20 @@ RepoDocs does not host generated wikis, replace source code review, or guarantee
 
 ## Install
 
+RepoDocs requires Git and Python 3.10 or newer. On macOS or Linux:
+
 ```bash
-git clone https://github.com/aryrabelo/repodocs ~/Sites/repodocs
-cd ~/Sites/repodocs
-./install.sh
+mkdir -p "$HOME/.local/share"
+git clone https://github.com/aryrabelo/repodocs.git "$HOME/.local/share/repodocs"
+"$HOME/.local/share/repodocs/install.sh"
+export PATH="$HOME/.local/bin:$PATH"
+repodocs --version
 repodocs --selftest
 ```
 
-`install.sh` creates `~/.local/bin/repodocs` and `~/.local/bin/repodocs-all` symlinks. Ensure `~/.local/bin` is on `PATH`.
+Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` or `~/.bashrc` to keep the command available in new terminals. Keep the clone at `~/.local/share/repodocs`: `install.sh` creates `~/.local/bin/repodocs` and `~/.local/bin/repodocs-all` symlinks that point to it.
+
+The main Python executable is the extensionless `repodocs` file. This follows the Unix CLI convention: its `python3` shebang lets users run `repodocs` directly instead of `python3 repodocs.py`.
 
 ## Quick start
 
