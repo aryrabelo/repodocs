@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "repodocs"
+description = "Generate a DeepWiki/cubic.dev-style repository wiki with Claude Code, OMP, or Codex CLI."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dynamic = ["version"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/aryrabelo/repodocs"
+
+[project.scripts]
+repodocs = "repodocs:cli"
+repodocs-all = "repodocs:cli_all"
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "repodocs.py" }, { file = "repo-docs-profile/**" }]
+
+[tool.hatch.version]
+path = "repodocs.py"
+pattern = "^VERSION = \"(?P<version>[^\"]+)\""
+
+[tool.hatch.build.targets.wheel.force-include]
+"repo-docs-profile" = "repo-docs-profile"

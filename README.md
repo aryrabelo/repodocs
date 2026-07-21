@@ -1,6 +1,6 @@
 # RepoDocs
 
-RepoDocs generates source-cited repository wikis with OMP, Claude Code, or Codex CLI. It scans a codebase deterministically, asks an LLM to plan feature-level pages, generates Markdown with line citations, and builds a self-contained HTML viewer.
+RepoDocs generates source-cited repository wikis with Claude Code, OMP, or Codex CLI. It scans a codebase deterministically, asks an LLM to plan feature-level pages, generates Markdown with line citations, and builds a self-contained HTML viewer.
 
 The driver is a single Python 3.10+ standard-library script. The planner and writer contracts are vendored in this repository, so output format does not depend on the target repository's agent instructions.
 
@@ -13,6 +13,7 @@ The driver is a single Python 3.10+ standard-library script. The planner and wri
 - [Choose an LLM backend](#choose-an-llm-backend)
 - [Pipeline commands](#pipeline-commands)
 - [Publishing safety](#publishing-safety)
+- [Publishing to GitHub Wiki](#publishing-to-github-wiki)
 - [Architecture](#architecture)
 - [Development](#development)
 - [Release policy](#release-policy)
@@ -20,14 +21,14 @@ The driver is a single Python 3.10+ standard-library script. The planner and wri
 
 ## Features
 
-- OMP, Claude Code, and Codex CLI backends
-- Claude Sonnet 5 support through OMP or Claude Code
-- Deterministic repository inventory and heuristic fallback plan
+- Claude Code backend with Claude Sonnet 5 as the zero-configuration default
+- OMP and Codex CLI backends for users who prefer them
 - Parallel page generation with SHA-256 incremental rebuilds
 - Source citation linting
 - Optional translation
 - Offline `wiki.html` with vendored assets
 - Guarded GitHub Pages publishing
+- GitHub Wiki export with Home mapping, sidebar generation, and commit-pinned source citations
 
 ## Non-goals
 
@@ -35,27 +36,34 @@ RepoDocs does not host generated wikis, replace source code review, or guarantee
 
 ## Install
 
-RepoDocs requires Git and Python 3.10 or newer. On macOS or Linux:
+RepoDocs requires Python 3.10 or newer and [uv](https://docs.astral.sh/uv/).
+
+Run it directly from GitHub — no clone needed:
 
 ```bash
-mkdir -p "$HOME/.local/share"
-git clone https://github.com/aryrabelo/repodocs.git "$HOME/.local/share/repodocs"
-"$HOME/.local/share/repodocs/install.sh"
-export PATH="$HOME/.local/bin:$PATH"
-repodocs --version
-repodocs --selftest
+uvx --from git+https://github.com/aryrabelo/repodocs repodocs --version
+uvx --from git+https://github.com/aryrabelo/repodocs repodocs --selftest
 ```
 
-Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` or `~/.bashrc` to keep the command available in new terminals. Keep the clone at `~/.local/share/repodocs`: `install.sh` creates `~/.local/bin/repodocs` and `~/.local/bin/repodocs-all` symlinks that point to it.
+To keep `repodocs` and `repodocs-all` on `PATH` without repeating `--from` on
+every invocation:
 
-The main Python executable is the extensionless `repodocs` file. This follows the Unix CLI convention: its `python3` shebang lets users run `repodocs` directly instead of `python3 repodocs.py`.
+```bash
+uv tool install git+https://github.com/aryrabelo/repodocs
+uv tool update-shell
+repodocs --version
+```
 
 ## Quick start
 
+Run the complete pipeline in any repository without installing RepoDocs:
+
 ```bash
 cd /path/to/project
-repodocs-all .
+uvx --from git+https://github.com/aryrabelo/repodocs repodocs-all .
 ```
+
+If you used `uv tool install`, the shorter command is `repodocs-all .`.
 
 `repodocs-all` runs the full pipeline: graphify update, scan, plan, generate, and vendored HTML. Install graphify with `uv tool install graphifyy`, or skip it:
 
@@ -68,32 +76,38 @@ Output is written to `repo-docs/`; open `repo-docs/wiki.html` in a browser.
 
 ## Choose an LLM backend
 
-Set `REPODOCS_BACKEND` to `omp`, `claude`, or `codex`. `REPODOCS_MODEL` is passed to the selected CLI and therefore uses that CLI's model naming.
+Set `REPODOCS_BACKEND` to `claude` (default), `omp`, or `codex`. `REPODOCS_MODEL` overrides the model passed to the selected CLI and uses that CLI's naming convention; leave it unset to get the per-backend default.
 
-### OMP with Claude Sonnet 5
+### Claude Code (default)
+
+Authenticate Claude Code once:
+
+```bash
+claude
+# Run /login inside Claude Code once, then exit.
+```
+
+Then run without any environment variables:
+
+```bash
+repodocs-all .
+```
+
+Claude Code runs in safe mode with no session persistence and only read, grep, and glob tools. The default model is `claude-sonnet-5`.
+
+### OMP (optional)
 
 ```bash
 export REPODOCS_BACKEND=omp
-export REPODOCS_MODEL=anthropic/claude-sonnet-5
+export REPODOCS_MODEL=anthropic/claude-sonnet-5   # or any OMP-supported model
 repodocs setup
 omp --profile=repo-docs
 # Run /login inside OMP once, then exit.
 ```
 
-OMP is the default backend. RepoDocs applies a one-process isolation overlay that disables target discovery providers, rules, skills, and extensions; only read, grep, and glob tools are available.
+RepoDocs applies a one-process isolation overlay that disables target discovery providers, rules, skills, and extensions; only read, grep, and glob tools are available.
 
-### Claude Code with Claude Sonnet 5
-
-```bash
-export REPODOCS_BACKEND=claude
-export REPODOCS_MODEL=claude-sonnet-5
-claude
-# Run /login inside Claude Code once, then exit.
-```
-
-Claude Code runs in safe mode with no session persistence and only read, grep, and glob tools.
-
-### Codex CLI
+### Codex CLI (optional)
 
 ```bash
 export REPODOCS_BACKEND=codex
@@ -125,19 +139,49 @@ Publishing stages files in a temporary worktree, refuses `main`, `master`, and `
 
 Generated documentation can still reveal sensitive source-level information that does not match a token pattern. Review the complete dry-run file list and generated pages before publishing a private repository's wiki.
 
+## Publishing to GitHub Wiki
+
+GitHub Wiki export writes Markdown pages to the repository's built-in wiki — a separate Git repository — instead of building a static HTML site on `gh-pages`.
+
+**One-time prerequisite.** GitHub requires at least one page before the wiki can be cloned. Navigate to `https://github.com/OWNER/REPO/wiki` and click "Create the first page" to initialise it. RepoDocs cannot create an empty wiki. See [Adding or editing wiki pages](https://docs.github.com/en/communities/documenting-your-project-with-wikis/adding-or-editing-wiki-pages).
+
+```bash
+# 1. Generate docs
+repodocs-all .
+
+# 2. Create the first wiki page in GitHub once (browser, not CLI)
+#    https://github.com/OWNER/REPO/wiki → "Create the first page"
+
+# 3. Preview — lists exact staged files and target
+repodocs publish-wiki . --dry-run
+
+# 4. Push
+repodocs publish-wiki . --allow-public
+```
+
+What `publish-wiki` does:
+
+- Maps `overview.md` (fallback: `index.md`) to `Home.md` — the wiki landing page
+- Generates `_Sidebar.md` from plan page order and titles
+- Rewrites source citation links to absolute GitHub blob URLs pinned to the current pushed commit SHA
+- Clones `OWNER/REPO.wiki.git` into a temporary directory, overwrites only exported filenames, commits if anything changed, and pushes — unrelated manual wiki pages are preserved
+- Wiki visibility follows repository settings; there is no separate access control
+
+If the wiki is uninitialized or disabled, `publish-wiki` exits with an explicit error and instructions to enable it in GitHub.
+
 ## Architecture
 
-- `repodocs` — stdlib-only driver and built-in selftest
+- `repodocs.py` — stdlib-only driver and built-in selftest
+- `pyproject.toml` — Hatchling packaging; publishes the `repodocs` and `repodocs-all` console scripts
 - `repo-docs-profile/AGENTS.md` — shared output discipline
 - `repo-docs-profile/isolation.yml` — OMP discovery-provider isolation
 - `repo-docs-profile/agents/wiki-planner.md` — planner JSON contract
 - `repo-docs-profile/agents/wiki-writer.md` — page and citation contract
-- `install.sh` — local command installation
 
 ## Development
 
 ```bash
-python3 repodocs --selftest
+uvx --refresh --from . repodocs --selftest
 ```
 
 For backend changes, also generate one page against a small fixture with every affected authenticated CLI. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).

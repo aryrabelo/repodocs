@@ -12,6 +12,7 @@ Pipeline:
   translate translate generated pages to another language
   html      bundle pages into a self-contained wiki.html viewer
   publish   push the built wiki to a GitHub Pages branch
+  publish-wiki export generated pages to the repo's GitHub Wiki
   all       graphify + scan + plan + generate + vendored html in one command
 
 Usage:
@@ -21,6 +22,7 @@ Usage:
     repodocs translate [repo] [--lang pt] [--out DIR] [--pages a,b] [--force]
     repodocs html [repo] [--out DIR] [--vendor]
     repodocs publish [repo] [--out DIR] [--branch gh-pages] [--remote origin] [--dry-run]
+    repodocs publish-wiki [repo] [--out DIR] [--remote origin] [--dry-run | --allow-public]
     repodocs all [repo] [--out DIR] [--force] [--no-graph]
     repodocs setup [--force]
     repodocs help | -h | --help
@@ -28,12 +30,12 @@ Usage:
     repodocs --version
     repodocs --selftest
 
-`repodocs-all` may be installed as a symlink to this script; it dispatches to
-`repodocs all` automatically.
+`repodocs` and `repodocs-all` are installed as console scripts (see
+`pyproject.toml`); `repodocs-all` dispatches to `repodocs all` automatically.
 
 LLM backend configuration:
-    REPODOCS_BACKEND=omp|claude|codex   default: omp
-    REPODOCS_MODEL=<backend model id>   optional; backend default when unset
+    REPODOCS_BACKEND=omp|claude|codex   default: claude
+    REPODOCS_MODEL=<backend model id>   optional; default: claude-sonnet-5 for claude, backend default otherwise
     REPODOCS_TIMEOUT=<seconds>          default: 600
     REPODOCS_JOBS=<1..16>               default: 4
 
@@ -42,8 +44,8 @@ Code and Codex receive the same vendored output contract explicitly, so page
 format and citations do not depend on the target repository's agent files.
 
 The deterministic heuristic plan is used whenever the planner is unavailable or
-returns invalid output. Stdlib only; runs under `uv run repodocs` or
-`python3 repodocs`.
+returns invalid output. Stdlib only; runs via the installed `repodocs`
+command, `uvx --from . repodocs`, or `python3 repodocs.py`.
 """
 
 import hashlib
@@ -118,8 +120,36 @@ def count_lines(p: Path) -> int:
         return 0
 
 
-def scan(repo: Path) -> dict:
-    """Walk the repo once, collecting the facts scan/plan need."""
+def safe_repo_file(repo: Path, rel: str) -> Path | None:
+    """Resolve repo-relative `rel` under `repo`, following symlinks. Return the
+    real path only when it is a regular file that stays inside the repo; None for
+    absolute paths, `..` traversal, symlink escapes, NUL bytes, or non-files."""
+    if not rel or os.path.isabs(rel) or "\x00" in rel:
+        return None
+    try:
+        root = repo.resolve()
+        target = (root / rel).resolve()
+        target.relative_to(root)
+    except (ValueError, OSError):
+        return None
+    return target if target.is_file() else None
+
+
+def scan(repo: Path, out: Path | None = None) -> dict:
+    """Walk the repo once, collecting the facts scan/plan need. RepoDocs' own
+    generated trees -- repo-docs/, graphify-out/, and the configured --out dir
+    (whatever its name) -- are skipped at the repo root so a rerun never ingests
+    its own vendored assets, Markdown, or JSON. Symlinks that escape the repo are
+    dropped so a planted link cannot smuggle an out-of-tree file into the wiki."""
+    ignore = {"repo-docs", "graphify-out"}
+    if out is not None:
+        try:
+            orel = out.resolve().relative_to(repo.resolve())
+            if orel.parts:
+                ignore.add(orel.parts[0])
+        except ValueError:
+            pass  # out lives outside the repo; os.walk never reaches it
+    repo_real = repo.resolve()
     src_files: list[str] = []
     line_counts: dict[str, int] = {}
     top_dirs: dict[str, list[str]] = {}
@@ -129,9 +159,18 @@ def scan(repo: Path) -> dict:
         depth = len(rootp.relative_to(repo).parts)
         if depth >= MAX_DEPTH:
             dirs[:] = []
-        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith("."))
+        dirs[:] = sorted(
+            d for d in dirs
+            if d not in SKIP_DIRS and not d.startswith(".")
+            and not (depth == 0 and d in ignore)
+        )
         for f in sorted(files):
             fp = rootp / f
+            if fp.is_symlink():
+                try:
+                    fp.resolve().relative_to(repo_real)
+                except (ValueError, OSError):
+                    continue  # symlink escapes the repo -> never a source file
             rel = str(fp.relative_to(repo))
             if is_source(fp):
                 src_files.append(rel)
@@ -139,7 +178,8 @@ def scan(repo: Path) -> dict:
                 top_dirs.setdefault(parts[0] if len(parts) > 1 else ".", []).append(rel)
                 line_counts[rel] = count_lines(fp)
 
-    has = lambda name: (repo / name).is_file()
+    def has(name):
+        return (repo / name).is_file()
     wf = repo / ".github" / "workflows"
     ci = [str(p.relative_to(repo)) for p in wf.glob("*") if p.is_file()] if wf.is_dir() else []
     return {
@@ -170,8 +210,8 @@ def readme_headings(repo: Path) -> list[str]:
     return []
 
 
-def scan_inventory(repo: Path) -> dict:
-    facts = scan(repo)
+def scan_inventory(repo: Path, out: Path | None = None) -> dict:
+    facts = scan(repo, out)
     return {
         "name": repo.resolve().name,
         "source_file_count": len(facts["src_files"]),
@@ -281,15 +321,15 @@ def graph_digest(repo: Path, max_nodes: int = 25, max_files: int = 15) -> str:
     byid = {n.get("id"): n for n in nodes if isinstance(n, dict) and n.get("id")}
     deg: dict = {}
     imported: dict = {}
-    for l in links:
-        if not isinstance(l, dict):
+    for edge in links:
+        if not isinstance(edge, dict):
             continue
         for k in ("source", "target"):
-            nid = l.get(k)
+            nid = edge.get(k)
             if nid in byid:
                 deg[nid] = deg.get(nid, 0) + 1
-        if l.get("relation") in ("imports", "imports_from"):
-            t = byid.get(l.get("target"))
+        if edge.get("relation") in ("imports", "imports_from"):
+            t = byid.get(edge.get("target"))
             if t and t.get("source_file"):
                 f = t["source_file"]
                 imported[f] = imported.get(f, 0) + 1
@@ -387,7 +427,7 @@ def validate_pages(repo: Path, raw) -> list[dict]:
             print(f"  drop: duplicate slug {slug!r}", file=sys.stderr)
             continue
         files = [f for f in entry.get("files", []) if isinstance(f, str)]
-        good = [f for f in files if (repo / f).is_file()]
+        good = [f for f in files if safe_repo_file(repo, f) is not None]
         for f in files:
             if f not in good:
                 print(f"  {slug}: dropped missing file {f}", file=sys.stderr)
@@ -402,12 +442,13 @@ def validate_pages(repo: Path, raw) -> list[dict]:
 
 
 BACKENDS = {"omp", "claude", "codex"}
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"
 PROFILE_SOURCE = Path(__file__).resolve().parent / "repo-docs-profile"
 _CONTRACT_CACHE: dict[str, str] = {}
 
 
 def backend_name() -> str:
-    name = os.environ.get("REPODOCS_BACKEND", "omp").strip().lower()
+    name = os.environ.get("REPODOCS_BACKEND", "claude").strip().lower()
     if name not in BACKENDS:
         raise ValueError(
             f"unsupported REPODOCS_BACKEND={name!r}; choose omp, claude, or codex"
@@ -419,6 +460,17 @@ def require_backend() -> str:
         return backend_name()
     except ValueError as ex:
         die(str(ex), 2)
+
+
+def effective_model(backend: str | None = None) -> str | None:
+    """REPODOCS_MODEL always wins; otherwise claude defaults to
+    DEFAULT_CLAUDE_MODEL, and omp/codex fall back to their own CLI default (None)."""
+    explicit = os.environ.get("REPODOCS_MODEL")
+    if explicit:
+        return explicit
+    if backend is None:
+        backend = backend_name()
+    return DEFAULT_CLAUDE_MODEL if backend == "claude" else None
 
 
 def backend_contract(prompt: str) -> str:
@@ -447,8 +499,9 @@ def backend_contract(prompt: str) -> str:
 
 
 def llm_label() -> str:
-    model = os.environ.get("REPODOCS_MODEL")
-    return f"{backend_name()}/{model}" if model else f"{backend_name()} default model"
+    backend = backend_name()
+    model = effective_model(backend)
+    return f"{backend}/{model}" if model else f"{backend} default model"
 
 
 def missing_resource_message(ex: FileNotFoundError) -> str:
@@ -467,7 +520,7 @@ def failure_detail(result: subprocess.CompletedProcess) -> str:
 def run_llm(repo: Path, prompt: str) -> subprocess.CompletedProcess:
     timeout = int(os.environ.get("REPODOCS_TIMEOUT", "600"))
     backend = backend_name()
-    model = os.environ.get("REPODOCS_MODEL")
+    model = effective_model(backend)
     if backend == "omp":
         cmd = [
             "omp", "--profile=repo-docs", "-p", "--no-session", "--cwd", str(repo),
@@ -553,7 +606,7 @@ def plan_fingerprint(prompt: str) -> str:
 
 
 def llm_plan(repo: Path, out: Path, dry_run: bool = False, force: bool = False):
-    inv = scan_inventory(repo)
+    inv = scan_inventory(repo, out)
     prompt = planner_prompt(repo, inv)
     if dry_run:
         print(prompt)
@@ -579,7 +632,7 @@ def llm_plan(repo: Path, out: Path, dry_run: bool = False, force: bool = False):
         from_llm = True
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, json.JSONDecodeError) as e:
         print(f"planner unavailable ({e}); falling back to heuristic plan", file=sys.stderr)
-        pages = plan_pages(repo, scan(repo))
+        pages = plan_pages(repo, scan(repo, out))
     out.mkdir(parents=True, exist_ok=True)
     (out / "plan.json").write_text(json.dumps(pages, indent=2) + "\n")
     if from_llm:  # never cache a heuristic fallback as the settled plan
@@ -597,7 +650,7 @@ def load_plan(repo: Path, out: Path, allow_omp: bool = True) -> list[dict]:
         print("no plan.json; running plan first", file=sys.stderr)
         return llm_plan(repo, out)
     print("no plan.json; using heuristic plan for dry run", file=sys.stderr)
-    return plan_pages(repo, scan(repo))
+    return plan_pages(repo, scan(repo, out))
 
 
 # ---- generation --------------------------------------------------------------
@@ -777,9 +830,9 @@ def lint_citations(repo: Path, out: Path, pages: list[dict]):
             continue
         for m in CITATION_RE.finditer(md.read_text()):
             path, a, b = m.group(1), int(m.group(2)), int(m.group(3))
-            fp = repo / path
-            if not fp.is_file():
-                bad.append((p["slug"], m.group(0), "file not found"))
+            fp = safe_repo_file(repo, path)
+            if fp is None:
+                bad.append((p["slug"], m.group(0), "file not found or outside repo"))
             else:
                 n = count_lines(fp)
                 if a < 1 or a > b or b > n:
@@ -790,6 +843,86 @@ def lint_citations(repo: Path, out: Path, pages: list[dict]):
             print(f"  {slug}: {cite} -- {why}", file=sys.stderr)
     else:
         print("citation lint: ok", file=sys.stderr)
+
+
+FULL_CITATION_RE = re.compile(r"\[([^\]\s]+?):L(\d+)-L(\d+)\]\(([^)\s]+)\)")
+
+
+def citation_error(repo: Path, label_path: str, a: int, b: int, href: str) -> str | None:
+    """Validate one `[path:La-Lb](href)` citation. Returns a reason string when
+    the citation is dishonest, else None. Never echoes file contents."""
+    hm = _CITE_HREF.match(href.strip())
+    if not hm:
+        return f"href {href!r} is not a repo-relative line citation"
+    h_path, h_a = hm.group(1), int(hm.group(2))
+    h_b = int(hm.group(3)) if hm.group(3) else h_a
+    if h_path != label_path:
+        return f"label path {label_path!r} does not match href path {h_path!r}"
+    if (h_a, h_b) != (a, b):
+        return f"label range L{a}-L{b} does not match href range L{h_a}-L{h_b}"
+    if a < 1 or a > b:
+        return f"invalid line range L{a}-L{b}"
+    target = safe_repo_file(repo, label_path)
+    if target is None:
+        return f"cited path {label_path!r} is missing or escapes the repository"
+    n = count_lines(target)
+    if b > n:
+        return f"line range L{a}-L{b} exceeds {label_path} length ({n} lines)"
+    return None
+
+
+def requires_evidence(md_text: str) -> bool:
+    """A page needs a citation once it has prose beyond its title and the
+    'Relevant source files' bullet list."""
+    for ln in md_text.splitlines():
+        s = ln.strip()
+        if not s or s.startswith("#") or s.startswith(("- ", "* ")):
+            continue
+        if s.lower().startswith("sources:"):
+            continue
+        return True
+    return False
+
+
+def citation_problems(repo: Path, mds: list[Path]) -> list[tuple[str, str, str]]:
+    """(page, citation-or-'-', reason) for every citation/evidence violation.
+    A content page carrying no valid citation is itself a violation. This is the
+    blocking gate the 'source-cited' promise rests on -- warnings are not enough."""
+    problems: list[tuple[str, str, str]] = []
+    for md in sorted(mds):
+        if not md.is_file():
+            continue
+        text = md.read_text()
+        valid = 0
+        for m in FULL_CITATION_RE.finditer(text):
+            err = citation_error(repo, m.group(1), int(m.group(2)), int(m.group(3)), m.group(4))
+            if err:
+                problems.append((md.name, m.group(0), err))
+            else:
+                valid += 1
+        if valid == 0 and requires_evidence(text):
+            problems.append((md.name, "-", "content page has no valid source citation"))
+    return problems
+
+
+def wiki_content_pages(out: Path, subdirs: bool = True) -> list[Path]:
+    """Generated content pages under `out` (excludes index.md and assets/). With
+    subdirs, also includes one level of translated dirs (e.g. out/pt)."""
+    pages = [p for p in out.glob("*.md") if p.name != "index.md"]
+    if subdirs and out.is_dir():
+        for sub in out.iterdir():
+            if sub.is_dir() and sub.name != "assets":
+                pages += [p for p in sub.glob("*.md") if p.name != "index.md"]
+    return pages
+
+
+def enforce_citations(repo: Path, out: Path, subdirs: bool, cmd: str):
+    """Block publish when any staged content page has missing/invalid citations."""
+    problems = citation_problems(repo, wiki_content_pages(out, subdirs))
+    if problems:
+        details = "; ".join(f"{page} {cite} -- {why}" for page, cite, why in problems[:12])
+        more = "" if len(problems) <= 12 else f" (+{len(problems) - 12} more)"
+        die(f"{cmd} blocked: citation problems -- {details}{more}", 1)
 
 
 def write_index(repo: Path, out: Path, pages: list[dict]):
@@ -821,16 +954,19 @@ CDN_ASSETS = {
     "mermaid": "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js",
     "hljs": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/highlight.min.js",
     "hljscss": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/styles/github-dark.min.css",
+    "dompurify": "https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js",
 }
 VENDOR_FILES = {
     "marked.min.js": CDN_ASSETS["marked"],
     "mermaid.min.js": CDN_ASSETS["mermaid"],
     "highlight.min.js": CDN_ASSETS["hljs"],
     "github-dark.min.css": CDN_ASSETS["hljscss"],
+    "purify.min.js": CDN_ASSETS["dompurify"],
 }
 VENDOR_ASSETS = {
     "marked": "assets/marked.min.js", "mermaid": "assets/mermaid.min.js",
     "hljs": "assets/highlight.min.js", "hljscss": "assets/github-dark.min.css",
+    "dompurify": "assets/purify.min.js",
 }
 
 LANG_LABELS = {
@@ -860,6 +996,17 @@ def _github_slug(url: str) -> str | None:
     m = (re.match(r"^git@github\.com:([^/]+)/(.+?)(?:\.git)?$", url)
          or re.match(r"^https?://github\.com/([^/]+)/(.+?)(?:\.git)?/?$", url))
     return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def wiki_remote_url(origin_url: str) -> str | None:
+    """<OWNER>/<REPO>.wiki.git clone URL, in the same scheme (ssh/https) as
+    `origin_url`. Pure, testable; None for non-github or unparseable remotes."""
+    slug = _github_slug(origin_url)
+    if not slug:
+        return None
+    if re.match(r"^git@github\.com:", origin_url.strip()):
+        return f"git@github.com:{slug}.wiki.git"
+    return f"https://github.com/{slug}.wiki.git"
 
 
 def github_base(repo: Path) -> str | None:
@@ -928,13 +1075,113 @@ def group_pages(slugs: list[str]) -> list[dict]:
             for g in ("Overview", "Features", "Reference", "Development") if buckets[g]]
 
 
+THIRD_PARTY_NOTICES = """RepoDocs vendors the following third-party libraries into
+this assets/ directory, redistributed unmodified from the jsDelivr npm CDN. Each
+remains under its own license; the notices below are reproduced to satisfy their
+attribution requirements and are published alongside the assets.
+
+================================================================================
+marked -- assets/marked.min.js  (npm: marked@12, https://github.com/markedjs/marked)
+SPDX-License-Identifier: MIT
+
+Copyright (c) 2018+, MarkedJS (https://github.com/markedjs/)
+Copyright (c) 2011-2018, Christopher Jeffrey (https://github.com/chjj/)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+================================================================================
+Mermaid -- assets/mermaid.min.js  (npm: mermaid@11, https://github.com/mermaid-js/mermaid)
+SPDX-License-Identifier: MIT
+
+Copyright (c) 2014 - 2022 Knut Sveidqvist
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+================================================================================
+highlight.js -- assets/highlight.min.js, assets/github-dark.min.css
+(npm: @highlightjs/cdn-assets@11, https://github.com/highlightjs/highlight.js)
+SPDX-License-Identifier: BSD-3-Clause
+
+Copyright (c) 2006, Ivan Sagalaev.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the copyright holder nor the names of its
+  contributors may be used to endorse or promote products derived from
+  this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+================================================================================
+DOMPurify -- assets/purify.min.js  (npm: dompurify@3, https://github.com/cure53/DOMPurify)
+SPDX-License-Identifier: Apache-2.0 OR MPL-2.0
+
+@license DOMPurify | (c) Cure53 and other contributors | Released under the
+Apache License 2.0 and Mozilla Public License 2.0. The vendored purify.min.js
+carries this notice inline in its file header. Full license texts:
+https://www.apache.org/licenses/LICENSE-2.0 and https://www.mozilla.org/MPL/2.0/
+(also github.com/cure53/DOMPurify/blob/main/LICENSE).
+================================================================================
+"""
+
+
 def vendor_assets(out: Path):
-    """Download the pinned CDN libs into <out>/assets/ for offline use."""
+    """Download the pinned CDN libs into <out>/assets/ for offline use, and write
+    the third-party license notices next to them so the published artifact carries
+    the attributions (not only the source repository)."""
     ad = out / "assets"
     ad.mkdir(parents=True, exist_ok=True)
     for name, url in VENDOR_FILES.items():
         with urllib.request.urlopen(url, timeout=60) as r:  # noqa: S310 (pinned jsdelivr https)
             (ad / name).write_bytes(r.read())
+    (ad / "THIRD-PARTY-NOTICES.txt").write_text(THIRD_PARTY_NOTICES)
 
 
 HTML_TEMPLATE = r"""<!doctype html>
@@ -1007,6 +1254,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 <script src="__MARKED__"></script>
 <script src="__MERMAID__"></script>
 <script src="__HLJS__"></script>
+<script src="__DOMPURIFY__"></script>
 <script>
 const PAGES = __PAGES__, GROUPS = __GROUPS__, ORDER = __ORDER__, REPO = __REPO__, LABELS = __LABELS__;
 if (window.mermaid) mermaid.initialize({ startOnLoad: false, theme: "dark" });
@@ -1070,13 +1318,13 @@ function pageFooter(content, slug) {
                      + '</span><span class="pn-t">' + PAGES[prev].title + '</span></a>' : '<span></span>';
   const nextA = next ? '<a class="pn-next" href="#' + next + '"><span class="pn-k">' + LABELS.next
                      + ' \u2192</span><span class="pn-t">' + PAGES[next].title + '</span></a>' : '<span></span>';
-  d.innerHTML = prevA + nextA;
+  d.innerHTML = DOMPurify.sanitize(prevA + nextA);
   content.appendChild(d);
 }
 function show(slug) {
   const p = PAGES[slug]; if (!p) return;
   const content = document.getElementById("content");
-  content.innerHTML = marked.parse(p.md);
+  content.innerHTML = DOMPurify.sanitize(marked.parse(p.md), { ADD_ATTR: ["target"] });
   content.querySelectorAll("code.language-mermaid").forEach(function (code) {
     const dv = document.createElement("div"); dv.className = "mermaid"; dv.textContent = code.textContent;
     code.parentElement.replaceWith(dv);
@@ -1111,6 +1359,7 @@ def render_html(breadcrumb: str, ghroot: str | None, data: dict,
             .replace("__BREADCRUMB__", breadcrumb)
             .replace("__GHLINK__", ghlink)
             .replace("__MARKED__", a["marked"])
+            .replace("__DOMPURIFY__", a["dompurify"])
             .replace("__MERMAID__", a["mermaid"])
             .replace("__HLJS__", a["hljs"])
             .replace("__HLJSCSS__", a["hljscss"])
@@ -1401,6 +1650,7 @@ def cmd_publish(repo: Path, out: Path, branch: str, remote: str, dry_run: bool,
     if "cdn.jsdelivr.net" in wiki.read_text():
         print("warning: wiki.html uses CDN tags (works when hosted; not offline) -- "
               "rebuild with `repodocs html ... --vendor` for a self-contained page", file=sys.stderr)
+    enforce_citations(repo, out, subdirs=True, cmd="publish")
     staging = Path(tempfile.mkdtemp(prefix="repodocs-stage-"))
     try:
         staged = stage_publish(out, staging)
@@ -1432,6 +1682,137 @@ def cmd_publish(repo: Path, out: Path, branch: str, remote: str, dry_run: bool,
         print(f"first publish? enable Pages: repo Settings -> Pages -> deploy from branch {branch} / root")
     else:
         print(f"pushed to {remote}/{branch} ({url}); GitHub Pages URL only derivable for github remotes")
+    return 0
+
+
+def stage_wiki(out: Path, staging: Path, base: str | None) -> list[str]:
+    """Copy generated wiki pages from `out` into `staging` in GitHub-Wiki layout
+    (pure fs; no git/network). overview.md becomes Home.md; index.md is the
+    fallback Home source when overview.md is missing, and is never itself
+    staged as a page. A _Sidebar.md is generated from plan.json order/titles
+    (falling back to each page's own `# heading` when the plan has no title).
+    Citation links are rewritten to absolute `base` blob URLs when given.
+    Returns the sorted list of staged relative paths."""
+    staged: list[str] = []
+    staging.mkdir(parents=True, exist_ok=True)
+    mds = sorted(p for p in out.glob("*.md") if p.name != "index.md")
+    present = {p.stem for p in mds}
+    home = out / "overview.md"
+    if not home.is_file():
+        home = out / "index.md" if (out / "index.md").is_file() else None
+
+    def put(text: str, name: str):
+        (staging / name).write_text(rewrite_citation_links(text, base))
+        staged.append(name)
+
+    if home is not None:
+        put(home.read_text(), "Home.md")
+    for p in mds:
+        if p.stem == "overview":
+            continue  # already staged as Home.md
+        put(p.read_text(), f"{p.stem}.md")
+
+    pages = _pages_for(out / "plan.json", present)
+    lines = ["# Pages", ""]
+    if home is not None:
+        lines.append("- [Home](Home)")
+    for pg in pages:
+        if pg["slug"] == "overview":
+            continue
+        title = pg["title"]
+        if title == pg["slug"]:  # plan had no title for this page -> use its own heading
+            src = out / f"{pg['slug']}.md"
+            if src.is_file():
+                title = md_title(src.read_text()) or title
+        lines.append(f"- [{title}]({pg['slug']})")
+    put("\n".join(lines) + "\n", "_Sidebar.md")
+    return sorted(staged)
+
+
+class WikiNotInitialized(RuntimeError):
+    """Raised when a repo's GitHub Wiki has no page yet, so it can't be cloned."""
+
+
+def publish_wiki_push(wiki_url: str, staged: list[str], staging: Path) -> str | None:
+    """Clone `wiki_url` into a tempdir, overwrite only the staged filenames (any
+    other, manually-added wiki pages are left untouched), commit only if the
+    tree changed, and push normally -- never force. Never touches the source
+    repo's working tree. Returns the new commit sha, or None if nothing
+    changed. Raises WikiNotInitialized when the wiki has no pages to clone."""
+    clone = Path(tempfile.mkdtemp(prefix="repodocs-wiki-"))
+    try:
+        result = subprocess.run(["git", "clone", "--depth", "1", wiki_url, str(clone)],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            raise WikiNotInitialized(
+                f"could not clone {wiki_url}: {failure_detail(result)}\n"
+                "the GitHub Wiki has no pages yet -- enable it (repo Settings -> "
+                "Features -> Wikis) and create the first Home page in the GitHub "
+                "UI, then retry `repodocs publish-wiki`"
+            )
+        for rel in staged:
+            dst = clone / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(staging / rel, dst)
+        subprocess.run(["git", "-C", str(clone), "add", "-A", "--", *staged],
+                       check=True, capture_output=True, text=True)
+        status = subprocess.run(["git", "-C", str(clone), "status", "--porcelain", "--", *staged],
+                                capture_output=True, text=True).stdout
+        if not status.strip():
+            return None
+        subprocess.run(["git", "-C", str(clone), "commit", "-m", "docs: publish repo wiki (repodocs)"],
+                       check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(clone), "push", "origin", "HEAD"],
+                       check=True, capture_output=True, text=True)
+        return subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+    finally:
+        shutil.rmtree(clone, ignore_errors=True)
+
+
+def cmd_publish_wiki(repo: Path, out: Path, remote: str, dry_run: bool, allow_public: bool = False) -> int:
+    mds = [p for p in out.glob("*.md") if p.name != "index.md"]
+    if not mds:
+        die(f"no .md pages in {out}; run `repodocs generate {repo}` first", 1)
+    url = _git_out(repo, "remote", "get-url", remote).strip()
+    if not url:
+        die(f"remote '{remote}' not found; add it or pass --remote <name>", 1)
+    wiki_url = wiki_remote_url(url)
+    if not wiki_url:
+        die(f"remote '{remote}' ({url}) is not a github.com remote; wiki publish needs github", 1)
+    base = github_base(repo)
+    if base:
+        ok, why = citations_safe(_git_out(repo, "status", "--porcelain"),
+                                 _git_out(repo, "branch", "-r", "--contains", "HEAD"))
+        if not ok:
+            print(f"citations left relative: {why}", file=sys.stderr)
+            base = None
+    enforce_citations(repo, out, subdirs=False, cmd="publish-wiki")
+    staging = Path(tempfile.mkdtemp(prefix="repodocs-wikistage-"))
+    try:
+        staged = stage_wiki(out, staging, base)
+        findings = staged_secret_findings(staging)
+        if findings:
+            details = ", ".join(f"{path}:{line} ({label})" for path, line, label in findings[:10])
+            die(f"publish-wiki blocked: possible secrets in staged wiki: {details}", 1)
+        if dry_run:
+            print(f"target: {wiki_url}")
+            for r in staged:
+                print(f"  {r}")
+            print(f"\n(dry run) {len(staged)} file(s); rerun with --allow-public to push")
+            return 0
+        if not allow_public:
+            die("refusing public push without --allow-public; run --dry-run and review first", 1)
+        try:
+            sha = publish_wiki_push(wiki_url, staged, staging)
+        except WikiNotInitialized as ex:
+            die(str(ex), 1)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    if sha is None:
+        print("wiki already up to date; nothing to push")
+    else:
+        print(f"pushed {sha[:12]} to {wiki_url}")
     return 0
 
 
@@ -1497,7 +1878,7 @@ ALL_HELP = """repodocs all [repo] [--out DIR] [--force] [--no-graph]
 
 Run the complete local pipeline: graphify update, scan, plan, generate, and
 html --vendor. graphify is required unless --no-graph is passed. --force
-replans and regenerates every page. The `repodocs-all` symlink dispatches here.
+replans and regenerates every page. The `repodocs-all` console entry point dispatches here.
 """
 
 
@@ -1513,6 +1894,28 @@ push. A real push requires --allow-public; run --dry-run and review first.
 Stages a tempdir and pushes it as a single orphan commit through a throwaway
 detached worktree. The working tree and current branch are not changed. The docs
 branch is force-pushed because its history is disposable."""
+
+
+PUBLISH_WIKI_HELP = """repodocs publish-wiki [repo] [--out DIR] [--remote origin]
+                              [--dry-run | --allow-public]
+
+Export the built <out>/*.md pages into the repo's GitHub Wiki (a separate git
+repo at github.com/<owner>/<repo>.wiki.git, in the same ssh/https scheme as the
+named remote). overview.md becomes Home.md (index.md is used instead when
+overview.md is missing); index.md itself is never staged as a page. A
+_Sidebar.md is generated from plan.json order/titles. Citation links are
+rewritten to absolute github.com/<o>/<r>/blob/<sha> URLs when the working tree
+is clean and HEAD is pushed. The staged tree is scanned for common private-key,
+GitHub-token, and cloud/API-key patterns before either preview or push.
+
+A real push clones the wiki into a tempdir, overwrites only the exported
+filenames (any other, manually-added wiki pages are left untouched), commits
+only if something changed, and pushes normally -- never force. The source
+working tree and current branch are never touched. GitHub wikis need at least
+one page before they can be cloned: if the wiki has never been initialized,
+enable it (repo Settings -> Features -> Wikis) and create the first Home page
+in the GitHub UI, then retry. --dry-run lists the staged files and target
+without pushing; a real push requires --allow-public."""
 
 
 SETUP_HELP = """repodocs setup [--force]
@@ -1531,10 +1934,10 @@ global credential database."""
 
 BACKEND_HELP = """
 Backends:
-  REPODOCS_BACKEND=omp     OMP profile installed by `repodocs setup` (default)
-  REPODOCS_BACKEND=claude  Claude Code print mode; vendored contract injected
+  REPODOCS_BACKEND=omp     OMP profile installed by `repodocs setup`
+  REPODOCS_BACKEND=claude  Claude Code print mode; vendored contract injected (default; model default: claude-sonnet-5)
   REPODOCS_BACKEND=codex   Codex exec read-only mode; vendored contract injected
-Set REPODOCS_MODEL to a model identifier accepted by the selected CLI."""
+Set REPODOCS_MODEL to override the model identifier for the selected CLI."""
 
 
 PROFILE_DEST = Path.home() / ".omp" / "profiles" / "repo-docs" / "agent"
@@ -1732,6 +2135,16 @@ def cmd_publish_cli(args: list[str]):
     sys.exit(cmd_publish(
         repo, out, branch, remote, "--dry-run" in args, "--allow-public" in args
     ))
+
+
+def cmd_publish_wiki_cli(args: list[str]):
+    if "--help" in args or "-h" in args:
+        print(PUBLISH_WIKI_HELP)
+        return
+    repo = parse_repo_and_flags(args)
+    out = Path(get_flag(args, "--out") or (repo / "repo-docs"))
+    remote = get_flag(args, "--remote") or "origin"
+    sys.exit(cmd_publish_wiki(repo, out, remote, "--dry-run" in args, "--allow-public" in args))
 
 
 # ---- selftest ----------------------------------------------------------------
@@ -1944,14 +2357,35 @@ def selftest():
         else:
             os.environ["REPODOCS_JOBS"] = _prev
 
-    # backend selection + vendored contract loading (pure; no CLI calls)
+    # backend selection + effective model resolution + vendored contract loading
+    # (pure; no CLI calls)
     _prev_backend = os.environ.get("REPODOCS_BACKEND")
+    _prev_model = os.environ.get("REPODOCS_MODEL")
     try:
+        os.environ.pop("REPODOCS_BACKEND", None)
+        os.environ.pop("REPODOCS_MODEL", None)
+        assert backend_name() == "claude"  # no-env default
+        assert effective_model() == DEFAULT_CLAUDE_MODEL
+
         for value in ("omp", "claude", "codex"):
             os.environ["REPODOCS_BACKEND"] = value
             assert backend_name() == value
         os.environ["REPODOCS_BACKEND"] = "invalid"
         assert _raises(backend_name)
+
+        os.environ.pop("REPODOCS_MODEL", None)
+        os.environ["REPODOCS_BACKEND"] = "omp"
+        assert effective_model() is None  # omp never inherits the claude default
+        os.environ["REPODOCS_BACKEND"] = "codex"
+        assert effective_model() is None  # codex never inherits the claude default
+        os.environ["REPODOCS_BACKEND"] = "claude"
+        assert effective_model() == DEFAULT_CLAUDE_MODEL
+
+        os.environ["REPODOCS_MODEL"] = "custom-model"
+        for value in ("omp", "claude", "codex"):
+            os.environ["REPODOCS_BACKEND"] = value
+            assert effective_model() == "custom-model"  # explicit override always wins
+
         planner_contract = backend_contract("Plan the wiki pages for x")
         writer_contract = backend_contract("Write the wiki page `x`")
         assert "wiki-planner" in planner_contract and "wiki-writer" in writer_contract
@@ -1960,6 +2394,10 @@ def selftest():
             os.environ.pop("REPODOCS_BACKEND", None)
         else:
             os.environ["REPODOCS_BACKEND"] = _prev_backend
+        if _prev_model is None:
+            os.environ.pop("REPODOCS_MODEL", None)
+        else:
+            os.environ["REPODOCS_MODEL"] = _prev_model
 
     # publish staging (pure fs; no git/network)
     with tempfile.TemporaryDirectory() as td:
@@ -1986,6 +2424,49 @@ def selftest():
         assert publish_branch_safe("gh-pages")
         assert not publish_branch_safe("main") and not publish_branch_safe("MASTER")
         assert (st / "index.html").is_file() and (st / ".nojekyll").is_file()
+    # wiki staging (pure fs; no git/network): Home mapping, Sidebar order/title,
+    # absolute citation rewrite, index exclusion, secret-guard compatibility
+    with tempfile.TemporaryDirectory() as td:
+        o = Path(td) / "repo-docs"
+        o.mkdir()
+        (o / "overview.md").write_text("# Overview\nsee [core.py:L1-L2](src/core.py#L1-L2)\n")
+        (o / "testing.md").write_text("# Testing\nbody\n")
+        (o / "ghost.md").write_text("# Ghost\nbody\n")  # not in plan.json -> falls back to md_title
+        (o / "index.md").write_text("# nav\n")  # never staged as a page
+        (o / "plan.json").write_text(json.dumps([
+            {"slug": "overview", "title": "Overview"},
+            {"slug": "testing", "title": "Testing Guide"},
+        ]))
+        st = Path(td) / "wikistage"
+        base = "https://github.com/o/r/blob/deadbeef"
+        staged = stage_wiki(o, st, base)
+        assert staged == sorted(["Home.md", "testing.md", "ghost.md", "_Sidebar.md"]), staged
+        assert "index.md" not in staged and not (st / "index.md").exists()
+        home = (st / "Home.md").read_text()
+        assert 'href="https://github.com/o/r/blob/deadbeef/src/core.py#L1-L2"' in home, home
+        sidebar = (st / "_Sidebar.md").read_text()
+        assert sidebar.index("Home") < sidebar.index("Testing Guide") < sidebar.index("Ghost"), sidebar
+        assert "[Testing Guide](testing)" in sidebar and "[Ghost](ghost)" in sidebar, sidebar
+        assert not staged_secret_findings(st)
+        (st / "leak.md").write_text("key: AKIA" + "A" * 16)
+        findings = staged_secret_findings(st)
+        assert findings and findings[0][0] == "leak.md" and findings[0][2] == "cloud/API key", findings
+
+    # wiki staging: index.md is the fallback Home source when overview.md is absent
+    with tempfile.TemporaryDirectory() as td:
+        o = Path(td) / "repo-docs"
+        o.mkdir()
+        (o / "index.md").write_text("# nav-as-home\n")
+        st = Path(td) / "wikistage2"
+        staged = stage_wiki(o, st, None)
+        assert staged == ["Home.md", "_Sidebar.md"], staged
+        assert (st / "Home.md").read_text() == "# nav-as-home\n"
+
+    # wiki remote URL: same scheme (ssh/https) as origin, github-only
+    assert wiki_remote_url("git@github.com:aryrabelo/planqueue.git") == "git@github.com:aryrabelo/planqueue.wiki.git"
+    assert wiki_remote_url("https://github.com/aryrabelo/planqueue.git") == "https://github.com/aryrabelo/planqueue.wiki.git"
+    assert wiki_remote_url("https://github.com/o/r") == "https://github.com/o/r.wiki.git"
+    assert wiki_remote_url("git@gitlab.com:o/r.git") is None
     # setup_install: fresh / identical / differs-kept / force-overwrite (tempdirs, no HOME)
     with tempfile.TemporaryDirectory() as td:
         src, dst = Path(td) / "src", Path(td) / "dst"
@@ -2003,6 +2484,100 @@ def selftest():
         acts = dict(setup_install(src, dst, force=True))
         assert acts["AGENTS.md"] == "overwritten", acts
         assert (dst / "AGENTS.md").read_bytes() == b"A\n", "--force must overwrite"
+
+    # ---- security regressions ------------------------------------------------
+    # safe_repo_file: rejects traversal/absolute/NUL/symlink-escape; accepts in-repo
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        (repo / "in.py").write_text("x=1\n")
+        assert safe_repo_file(repo, "in.py") == (repo / "in.py").resolve()
+        assert safe_repo_file(repo, "../outside.py") is None
+        assert safe_repo_file(repo, "/etc/passwd") is None
+        assert safe_repo_file(repo, "nope.py") is None
+        assert safe_repo_file(repo, "bad\x00.py") is None
+        outside = Path(td + "-secret")
+        outside.mkdir()
+        (outside / "secret.txt").write_text("top secret\n")
+        try:
+            (repo / "escape.py").symlink_to(outside / "secret.txt")
+            assert safe_repo_file(repo, "escape.py") is None, "symlink escape must be rejected"
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+
+    # validate_pages drops a traversal file candidate (falls back to README)
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        (repo / "README.md").write_text("# r\n")
+        vp = validate_pages(repo, [{"slug": "x", "files": ["../../../etc/passwd"]}])
+        assert vp[0]["files"] == ["README.md"], vp
+
+    # scan self-ingestion: repo-docs/, graphify-out/, and the configured out dir
+    # (any name) never appear in source_files; symlink escapes are dropped
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        (repo / "real.py").write_text("x=1\n")
+        for d in ("repo-docs", "graphify-out", "mydocs"):
+            (repo / d / "assets").mkdir(parents=True)
+            (repo / d / "assets" / "marked.min.js").write_text("VENDORED\n")
+            (repo / d / "note.py").write_text("y=2\n")
+        outside = Path(td + "-ext")
+        outside.mkdir()
+        (outside / "leak.py").write_text("secret\n")
+        (repo / "link.py").symlink_to(outside / "leak.py")
+        try:
+            srcs = scan(repo, out=repo / "mydocs")["src_files"]
+            assert "real.py" in srcs, srcs
+            assert not any(s.startswith(("repo-docs/", "graphify-out/", "mydocs/")) for s in srcs), srcs
+            assert "link.py" not in srcs, "symlink escape leaked into scan"
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+
+    # citation gate: valid citation passes; every dishonest form is caught
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        (repo / "core.py").write_text("z=0\n" * 20)
+        assert citation_error(repo, "core.py", 1, 20, "core.py#L1-L20") is None
+        assert citation_error(repo, "core.py", 1, 20, "core.py#L1-L19"), "range mismatch"
+        assert citation_error(repo, "core.py", 1, 20, "other.py#L1-L20"), "path mismatch"
+        assert citation_error(repo, "core.py", 0, 20, "core.py#L0-L20"), "zero start"
+        assert citation_error(repo, "core.py", 5, 1, "core.py#L5-L1"), "reversed range"
+        assert citation_error(repo, "core.py", 1, 999, "core.py#L1-L999"), "beyond eof"
+        assert citation_error(repo, "gone.py", 1, 2, "gone.py#L1-L2"), "missing file"
+        assert citation_error(repo, "../esc.py", 1, 2, "../esc.py#L1-L2"), "traversal"
+        assert citation_error(repo, "core.py", 1, 20, "not a citation"), "bad href"
+
+    # requires_evidence: prose needs a citation; heading + file list alone does not
+    assert requires_evidence("# T\nSome prose.\n") is True
+    assert requires_evidence("# T\n\n## Relevant source files\n\n- a.py\n") is False
+
+    # citation_problems: unsourced/invalid content pages block; index.md excluded
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        (repo / "m.py").write_text("q=1\n" * 10)
+        out = repo / "repo-docs"
+        out.mkdir()
+        (out / "good.md").write_text("# Good\n\nProse.\n\nSources: [m.py:L1-L5](m.py#L1-L5)\n")
+        (out / "bare.md").write_text("# Bare\n\nUnsourced prose paragraph.\n")
+        (out / "bad.md").write_text("# Bad\n\nProse.\n\nSources: [m.py:L1-L99](m.py#L1-L99)\n")
+        (out / "index.md").write_text("# nav\nprose\n")
+        names = {p[0] for p in citation_problems(repo, wiki_content_pages(out))}
+        assert "good.md" not in names, names
+        assert "bare.md" in names and "bad.md" in names, names
+        assert "index.md" not in names, "index.md must be excluded"
+
+    # XSS wiring: the built viewer sanitizes markdown with DOMPurify + loads it
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td)
+        (out / "overview.md").write_text("# O\nbody\n")
+        (out / "plan.json").write_text('[{"slug":"overview","title":"O","files":[]}]')
+        html = build_html(Path(td), out).read_text()
+        assert "DOMPurify.sanitize(marked.parse(" in html, "viewer must sanitize markdown"
+        assert "__DOMPURIFY__" not in html and "purify.min.js" in html, "dompurify asset must be wired"
+
+    # third-party notices name every vendored lib and its real SPDX identifier
+    for tok in ("marked", "Mermaid", "highlight.js", "DOMPurify",
+                "MIT", "BSD-3-Clause", "Apache-2.0", "MPL-2.0"):
+        assert tok in THIRD_PARTY_NOTICES, tok
 
     print("selftest: ok")
 
@@ -2032,6 +2607,8 @@ def main(argv: list[str]):
         cmd_translate_cli(rest)
     elif cmd == "publish":
         cmd_publish_cli(rest)
+    elif cmd == "publish-wiki":
+        cmd_publish_wiki_cli(rest)
     elif cmd == "all":
         sys.exit(cmd_all(rest))
     elif cmd == "setup":
@@ -2040,8 +2617,15 @@ def main(argv: list[str]):
         die(f"unknown subcommand: {cmd}\n\n{__doc__}", 2)
 
 
+def cli():
+    """Console-script entry point installed as `repodocs`."""
+    main(sys.argv[1:])
+
+
+def cli_all():
+    """Console-script entry point installed as `repodocs-all`; dispatches to `repodocs all`."""
+    main(["all", *sys.argv[1:]])
+
+
 if __name__ == "__main__":
-    args = sys.argv[1:]
-    if Path(sys.argv[0]).name == "repodocs-all":
-        args = ["all", *args]
-    main(args)
+    cli()

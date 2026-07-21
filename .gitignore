@@ -19,3 +19,8 @@ agent-tools.md
 .coverage
 htmlcov/
 ultrareview/
+
+# Packaging build outputs
+dist/
+build/
+*.egg-info/

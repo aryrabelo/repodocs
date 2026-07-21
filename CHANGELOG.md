@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `publish-wiki` command: exports generated Markdown to a repository's GitHub Wiki, maps `overview.md` to `Home.md`, generates `_Sidebar.md` from plan order, rewrites source citations to commit-pinned GitHub blob URLs, and preserves unrelated manual wiki pages.
+
+### Changed
+
+- Claude Code with `claude-sonnet-5` is now the default backend. Running `repodocs-all .` after authenticating Claude Code requires no environment variables. OMP and Codex remain supported via `REPODOCS_BACKEND=omp|codex`.
+- Distribution now uses standard Python packaging with `uvx`/`uv tool install`, exposing `repodocs` and `repodocs-all` console commands without a persistent source clone.
+
 ## [0.1.0] - 2026-07-21
 
 ### Added

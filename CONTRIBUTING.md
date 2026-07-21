@@ -5,7 +5,7 @@ Thanks for helping improve RepoDocs. Keep pull requests focused on one change.
 ## Prerequisites
 
 - Python 3.10 or newer
-- Git
+- Git and [uv](https://docs.astral.sh/uv/)
 - At least one supported agent CLI for live generation: OMP, Claude Code, or Codex
 - Graphify only when running the default `repodocs all` pipeline without `--no-graph`
 
@@ -16,17 +16,16 @@ RepoDocs itself uses only the Python standard library.
 ```bash
 git clone https://github.com/aryrabelo/repodocs.git
 cd repodocs
-./install.sh
-repodocs --selftest
+uvx --from . repodocs --selftest
 ```
 
-The installer creates command symlinks and installs the vendored RepoDocs agent profile. It does not copy credentials.
+`uvx --from .` builds the package from the local checkout and runs it without installing anything persistent. It does not copy credentials.
 
 ## Development workflow
 
 1. Create a branch from `main`.
 2. Make the smallest change that solves one problem.
-3. Run `python3 repodocs --selftest`.
+3. Run `uvx --from . repodocs --selftest`.
 4. For backend changes, exercise the affected CLI against a small local repository.
 5. Update `README.md` and `CHANGELOG.md` when user-visible behavior changes.
 6. Open a pull request using the repository template.
