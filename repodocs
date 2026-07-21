@@ -25,6 +25,7 @@ Usage:
     repodocs setup [--force]
     repodocs help | -h | --help
     repodocs <subcommand> --help
+    repodocs --version
     repodocs --selftest
 
 `repodocs-all` may be installed as a symlink to this script; it dispatches to
@@ -57,6 +58,8 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+
+VERSION = "0.1.0"
 
 SRC_EXTS = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".rb", ".java", ".kt",
@@ -1764,6 +1767,7 @@ def selftest():
         slugs = [p["slug"] for p in plan_pages(repo, scan(repo))]
         for expect in ("overview", "installation", "architecture", "development", "changelog"):
             assert expect in slugs, f"missing {expect} in {slugs}"
+        assert re.fullmatch(r"\d+\.\d+\.\d+", VERSION), VERSION
         assert slugs[0] == "overview" and any(s.startswith("component-") for s in slugs), slugs
         inv = scan_inventory(repo)
         assert "## Installation" in inv["readme_headings"] and inv["source_file_count"] == 3, inv
@@ -2014,6 +2018,8 @@ def main(argv: list[str]):
         print(__doc__)
     elif cmd == "--selftest":
         selftest()
+    elif cmd == "--version":
+        print(VERSION)
     elif cmd == "scan":
         cmd_scan(rest)
     elif cmd == "plan":

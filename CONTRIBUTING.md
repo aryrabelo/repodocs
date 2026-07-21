@@ -1,15 +1,42 @@
-# Contributing
+# Contributing to RepoDocs
 
-RepoDocs uses Python 3.10+ and the standard library only. Clone the repository; no dependency installation is required.
+Thanks for helping improve RepoDocs. Keep pull requests focused on one change.
 
-## Verification
+## Prerequisites
+
+- Python 3.10 or newer
+- Git
+- At least one supported agent CLI for live generation: OMP, Claude Code, or Codex
+- Graphify only when running the default `repodocs all` pipeline without `--no-graph`
+
+RepoDocs itself uses only the Python standard library.
+
+## Setup
 
 ```bash
-python3 repodocs --selftest
+git clone https://github.com/aryrabelo/repodocs.git
+cd repodocs
+./install.sh
+repodocs --selftest
 ```
 
-For backend changes, also run `repodocs plan` and generate one page against a small fixture with every affected authenticated CLI. Never commit generated `repo-docs/` output, `graphify-out/`, credential databases, or private repository content.
+The installer creates command symlinks and installs the vendored RepoDocs agent profile. It does not copy credentials.
 
-## Pull requests
+## Development workflow
 
-Keep changes scoped, explain the observable behavior, and include exact verification commands and results. Use English Conventional Commit titles.
+1. Create a branch from `main`.
+2. Make the smallest change that solves one problem.
+3. Run `python3 repodocs --selftest`.
+4. For backend changes, exercise the affected CLI against a small local repository.
+5. Update `README.md` and `CHANGELOG.md` when user-visible behavior changes.
+6. Open a pull request using the repository template.
+
+## Scope
+
+Good contributions improve repository scanning, page planning, cited wiki generation, translation, publishing safety, or compatibility with supported agent CLIs. RepoDocs is intentionally a single-file, standard-library tool; discuss new runtime dependencies before implementing them.
+
+## Code of Conduct
+
+Be respectful, constructive, and specific. Harassment, discrimination, and abusive behavior are not accepted. Maintainers may edit or remove contributions or participation that violate these expectations.
+
+Report conduct concerns privately to [aryrabelo@gmail.com](mailto:aryrabelo@gmail.com).

@@ -1,13 +1,24 @@
 # Security Policy
 
+## Supported versions
+
+Security fixes are applied to the latest release and the current `main` branch.
+
 ## Reporting a vulnerability
 
-Do not open a public issue for vulnerabilities involving credential exposure, prompt injection, command execution, or unsafe repository publishing. Report them privately through GitHub Security Advisories for this repository.
+Do not open a public issue for a suspected vulnerability.
 
-Include the affected command, reproduction steps, impact, and suggested mitigation. Never include real API keys, OAuth tokens, credential databases, or private repository contents.
+Report it through [GitHub private vulnerability reporting](https://github.com/aryrabelo/repodocs/security/advisories/new) or email [aryrabelo@gmail.com](mailto:aryrabelo@gmail.com). Include affected commands, reproduction steps, impact, and any suggested mitigation. Expect an acknowledgement within 72 hours.
 
-## Trust boundary
+## Security scope
 
-Treat every documented repository as untrusted input. RepoDocs disables target-repository agent customizations and restricts LLM backends to read-only repository inspection. `repodocs setup` installs prompt files only and never copies credentials automatically.
+RepoDocs:
 
-Generated documentation can contain sensitive business or implementation details even when it contains no machine-detectable secret. Review output before publishing.
+- reads the target repository and writes generated output under the selected output directory;
+- invokes a locally installed OMP, Claude Code, or Codex CLI when generation is requested;
+- may invoke Graphify during `repodocs all`;
+- accesses the network only through those external tools and when publishing to GitHub Pages;
+- refuses direct publishing from `main`, `master`, or `trunk`, scans generated output for common secret patterns, and requires `--allow-public` before pushing;
+- does not copy or bundle agent credentials during setup.
+
+Generated documentation can still expose sensitive repository content. Review the output and repository visibility before publishing it.

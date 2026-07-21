@@ -1,8 +1,21 @@
+graphify-out/
 __pycache__/
-*.pyc
 .DS_Store
+*.pyc
+*.swp
+*.log
 .env
 .env.*
-!.env.example
+
+# Local agent and harness state
+AGENTS.md
+.claude/
+.harness-mem/
+
+# Generated output
 repo-docs/
-graphify-out/
+omp-session-*.html
+agent-tools.md
+.coverage
+htmlcov/
+ultrareview/

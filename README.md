@@ -4,6 +4,20 @@ RepoDocs generates source-cited repository wikis with OMP, Claude Code, or Codex
 
 The driver is a single Python 3.10+ standard-library script. The planner and writer contracts are vendored in this repository, so output format does not depend on the target repository's agent instructions.
 
+## Contents
+
+- [Features](#features)
+- [Non-goals](#non-goals)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Choose an LLM backend](#choose-an-llm-backend)
+- [Pipeline commands](#pipeline-commands)
+- [Publishing safety](#publishing-safety)
+- [Architecture](#architecture)
+- [Development](#development)
+- [Release policy](#release-policy)
+- [License](#license)
+
 ## Features
 
 - OMP, Claude Code, and Codex CLI backends
@@ -14,6 +28,10 @@ The driver is a single Python 3.10+ standard-library script. The planner and wri
 - Optional translation
 - Offline `wiki.html` with vendored assets
 - Guarded GitHub Pages publishing
+
+## Non-goals
+
+RepoDocs does not host generated wikis, replace source code review, or guarantee that generated documentation is safe to publish without human review. It also does not manage credentials for the supported agent CLIs.
 
 ## Install
 
@@ -117,6 +135,10 @@ python3 repodocs --selftest
 ```
 
 For backend changes, also generate one page against a small fixture with every affected authenticated CLI. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+
+## Release policy
+
+RepoDocs follows [Semantic Versioning](https://semver.org/). User-visible changes are recorded in [CHANGELOG.md](CHANGELOG.md); `repodocs --version` prints the installed version. Security fixes target the latest release and `main`.
 
 ## License
 
