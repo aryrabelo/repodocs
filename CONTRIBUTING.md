@@ -16,7 +16,7 @@ RepoDocs itself uses only the Python standard library.
 ```bash
 git clone https://github.com/aryrabelo/repodocs.git
 cd repodocs
-uvx --from . repodocs --selftest
+uv run --extra test pytest
 ```
 
 `uvx --from .` builds the package from the local checkout and runs it without installing anything persistent. It does not copy credentials.
@@ -25,14 +25,14 @@ uvx --from . repodocs --selftest
 
 1. Create a branch from `main`.
 2. Make the smallest change that solves one problem.
-3. Run `uvx --from . repodocs --selftest`.
+3. Run the gates: `uv run --extra test pytest`, `uvx ruff@0.15.22 check .`, and `python3 scripts/check_module_size.py`.
 4. For backend changes, exercise the affected CLI against a small local repository.
 5. Update `README.md` and `CHANGELOG.md` when user-visible behavior changes.
 6. Open a pull request using the repository template.
 
 ## Scope
 
-Good contributions improve repository scanning, page planning, cited wiki generation, translation, publishing safety, or compatibility with supported agent CLIs. RepoDocs is intentionally a single-file, standard-library tool; discuss new runtime dependencies before implementing them.
+Good contributions improve repository scanning, page planning, cited wiki generation, translation, publishing safety, or compatibility with supported agent CLIs. RepoDocs is intentionally a zero-runtime-dependency, standard-library tool organized as a small `src/repodocs` package; discuss new runtime dependencies before implementing them.
 
 ## Code of Conduct
 
