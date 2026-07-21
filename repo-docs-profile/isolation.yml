@@ -1,0 +1,11 @@
+# Disable every project/user discovery source while documenting untrusted repos.
+# Model providers such as anthropic and openai remain enabled.
+disabledProviders:
+  - native
+  - claude
+  - codex
+  - gemini
+  - opencode
+  - github
+  - agents
+  - agents-md
