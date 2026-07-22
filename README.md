@@ -8,9 +8,8 @@
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 ![Zero runtime deps](https://img.shields.io/badge/deps-0-brightgreen.svg)
 
-[![RepoDocs demo — click to watch the video](docs/demo.png)](https://github.com/aryrabelo/repodocs/raw/main/docs/demo.mp4)
-
-▶ **[Watch the 45-second demo](https://github.com/aryrabelo/repodocs/raw/main/docs/demo.mp4)** — RepoDocs generating a source-cited wiki, end to end.
+<!-- HERO: replace with a <5MB GIF/screenshot of a generated wiki page showing a source citation to an exact line (see repodocs-gtm/05-demo-asset.md). -->
+<!-- ![RepoDocs generating a cited wiki](docs/demo.gif) -->
 
 If RepoDocs is useful to you, please ⭐ the repo — it helps others find it.
 
@@ -51,8 +50,6 @@ uvx --from git+https://github.com/aryrabelo/repodocs repodocs-all .
 ```
 
 Open `repo-docs/wiki.html` in a browser. That's it.
-
-The demo above shows this exact pipeline producing a wiki whose every page links its claims to specific source lines.
 
 <!-- After PyPI publish (Phase 2), replace the block above with the friction-free:
 ```bash
