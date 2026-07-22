@@ -1,0 +1,52 @@
+# Publishes `repodocs` to PyPI on a version tag, via PyPI Trusted Publishing (OIDC).
+#
+# One-time setup (no long-lived token needed):
+#   1. Create the project's trusted publisher on PyPI:
+#      https://pypi.org/manage/account/publishing/  →  add a pending publisher:
+#        PyPI project name: repodocs
+#        Owner:             aryrabelo
+#        Repository:        repodocs
+#        Workflow name:     publish.yml
+#        Environment name:  pypi
+#   2. In GitHub → Settings → Environments, create an environment named `pypi`.
+#   3. Cut a tag matching VERSION in src/repodocs/__init__.py, e.g. `git tag v0.1.0 && git push origin v0.1.0`.
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for PyPI Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Verify tag matches VERSION in src/repodocs/__init__.py
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="$(grep -oE '^VERSION = "[^"]+"' src/repodocs/__init__.py | cut -d'"' -f2)"
+          echo "tag=$tag version=$ver"
+          [ "$tag" = "$ver" ] || { echo "::error::tag ($tag) does not match src/repodocs/__init__.py VERSION ($ver)"; exit 1; }
+
+      - name: Smoke test the built entrypoint
+        run: |
+          uvx --from . repodocs --version
+          uv run --extra test pytest -q
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Publish to PyPI (trusted publishing)
+        run: uv publish
