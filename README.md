@@ -2,14 +2,13 @@
 
 **Point RepoDocs at any repo and get a source-cited, always-rebuildable wiki — built by Claude Code, OMP, or Codex.**
 
-<!-- Badges: add PyPI version FIRST once published — https://img.shields.io/pypi/v/repodocs -->
+[![PyPI](https://img.shields.io/pypi/v/repodocs)](https://pypi.org/project/repodocs/)
 [![CI](https://github.com/aryrabelo/repodocs/actions/workflows/ci.yml/badge.svg)](https://github.com/aryrabelo/repodocs/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 ![Zero runtime deps](https://img.shields.io/badge/deps-0-brightgreen.svg)
 
-<!-- HERO: replace with a <5MB GIF/screenshot of a generated wiki page showing a source citation to an exact line (see repodocs-gtm/05-demo-asset.md). -->
-<!-- ![RepoDocs generating a cited wiki](docs/demo.gif) -->
+[![The wiki RepoDocs generates — an offline viewer with a source citation on every claim](docs/hero.png)](https://github.com/aryrabelo/repodocs/wiki)
 
 If RepoDocs is useful to you, please ⭐ the repo — it helps others find it.
 

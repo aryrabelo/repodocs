@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from ._util import die, log
-from .render import md_title
+from .render import build_html, md_title
 
 _MERMAID_RE = re.compile(r"```mermaid\n(.*?)```", re.DOTALL)
 
@@ -109,6 +109,11 @@ def cmd_render_diagrams(repo: Path, out: Path) -> int:
             log(f"[diagrams] {md.name}: {note}")
         total_r += r
         total_f += f
-    print(f"rendered {total_r} diagram(s) into {out}"
-          + (f"; {total_f} failed (kept as mermaid)" if total_f else ""))
+    if total_r and (out / "wiki.html").is_file():
+        build_html(repo, out, True)  # keep the offline viewer in sync with the swapped pages
+        print(f"rendered {total_r} diagram(s) into {out}; rebuilt {out / 'wiki.html'}"
+              + (f"; {total_f} failed (kept as mermaid)" if total_f else ""))
+    else:
+        print(f"rendered {total_r} diagram(s) into {out}"
+              + (f"; {total_f} failed (kept as mermaid)" if total_f else ""))
     return 1 if total_f else 0
