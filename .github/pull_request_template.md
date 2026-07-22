@@ -8,7 +8,7 @@
 
 ## Checklist
 
-- [ ] `uvx --from . repodocs --selftest` passes
+- [ ] `uv run --extra test pytest -q` passes
 - [ ] The affected backend or command was smoke-tested when behavior changed
 - [ ] README and CHANGELOG were updated when user-visible behavior changed
 - [ ] No runtime dependency was added without prior discussion
