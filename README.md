@@ -8,7 +8,9 @@
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 ![Zero runtime deps](https://img.shields.io/badge/deps-0-brightgreen.svg)
 
-[![The wiki RepoDocs generates — an offline viewer with a source citation on every claim](docs/hero.png)](https://github.com/aryrabelo/repodocs/wiki)
+![RepoDocs — point it at a repo, get a source-cited wiki](docs/assets/hero.gif)
+
+▶ **[Watch the demo](docs/assets/hero.mp4)**
 
 If RepoDocs is useful to you, please ⭐ the repo — it helps others find it.
 
@@ -40,7 +42,22 @@ maintainers who want docs they can trust — and never hand-write again.
 
 ## See it in action
 
-RepoDocs documents itself — **[browse the wiki it generated for this repo](https://github.com/aryrabelo/repodocs/wiki)**. Every page is written from the source and cites the exact file and lines behind each claim (its Architecture page, for example, links each statement to `src/repodocs/*.py` at a pinned commit), and each diagram is a pre-rendered image so it always renders. That whole wiki came from a single `repodocs-all .` run (see [Quick start](#quick-start)) — nothing hand-written.
+Point RepoDocs at any repo and run one command — you get a self-contained wiki where **every claim cites a file and line**:
+
+```bash
+$ uvx --from repodocs repodocs-all .
+# graphify → scan → plan → generate → html
+generate: 22 page(s) to write, 6 parallel job(s)
+  [done 1/22] installation
+  …
+  [done 22/22] testing
+citation lint: ok
+wrote repo-docs/wiki.html with vendored assets. Open it in a browser.
+```
+
+RepoDocs documents itself — that run produced this repo's own wiki (**[browse it](https://github.com/aryrabelo/repodocs/wiki)**), diagrams and all. Every page cites the exact source lines behind each claim:
+
+![The generated wiki — every claim cites a file and line](docs/assets/wiki-overview.png)
 
 ## Quick start
 
