@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from ._util import count_lines, die, safe_repo_file
-from .gitlinks import _CITE_HREF
+from .gitlinks import _CITE_HREF, _MD_LINK, _git_out
 
 
 CITATION_RE = re.compile(r"\[([^\]\s]+?):L(\d+)-L(\d+)\]")
@@ -75,28 +75,53 @@ def citation_error(repo: Path, label_path: str, a: int, b: int, href: str) -> st
     return None
 
 
+_CITE_LABEL_RE = re.compile(r"^(.+?):L?(\d+)(?:-L?(\d+))?$")
+
+
 def repair_citations(repo: Path, text: str) -> str:
-    """Clamp a citation whose end line overshoots the file's real length down to
-    that length -- the model's common 'to end of file' off-by-one -- rewriting the
-    label range and href together so they stay in sync. Citations that cannot be
-    made honest (missing file, start past EOF, inverted range, or a label/href
-    that already disagree) are left untouched for enforce_citations to block."""
-    def repl(m: "re.Match[str]") -> str:
-        label_path, a, b, href = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
-        if citation_error(repo, label_path, a, b, href) is None:
-            return m.group(0)  # already honest
-        target = safe_repo_file(repo, label_path)
+    """Deterministically canonicalize generated citation links to
+    `[path:La-Lb](path#La-Lb)` so honest-but-malformed citations pass
+    enforce_citations. For each `[label](href)` whose href is a repo-relative
+    line anchor (`path#La[-Lb]`):
+      * normalize a label that agrees with the href but is missing the `L`
+        prefix or is single-line;
+      * resolve a path that doesn't exist but uniquely matches a tracked file
+        by suffix (the model dropping a leading `src/<pkg>/` prefix);
+      * clamp an end line that overshoots the file's real length.
+    Only rewrite when label and href name the same path and range and the result
+    resolves to a tracked file with an in-bounds range; anything ambiguous
+    (path/range disagreement, no unique file, start past EOF) is left untouched
+    for enforce_citations to block."""
+    tracked = [t for t in _git_out(repo, "ls-files").split("\n") if t]
+
+    def resolve(path: str, a: int, b: int) -> "tuple[str, int, int] | None":
+        if safe_repo_file(repo, path) is None:
+            hits = [t for t in tracked if t.endswith("/" + path)]
+            if len(hits) != 1:
+                return None
+            path = hits[0]
+        target = safe_repo_file(repo, path)
         if target is None:
-            return m.group(0)  # unrepairable path -- let validation block
-        n = count_lines(target)
-        if not (1 <= a <= n < b):
-            return m.group(0)  # not a pure end-of-file overshoot
-        hm = _CITE_HREF.match(href.strip())
-        if not hm or hm.group(1) != label_path or int(hm.group(2)) != a \
-                or int(hm.group(3) or hm.group(2)) != b:
-            return m.group(0)  # label/href out of sync -- don't guess
-        return f"[{label_path}:L{a}-L{n}]({label_path}#L{a}-L{n})"
-    return FULL_CITATION_RE.sub(repl, text)
+            return None
+        end = min(b, count_lines(target))
+        return (path, a, end) if 1 <= a <= end else None
+
+    def repl(m: "re.Match[str]") -> str:
+        hm = _CITE_HREF.match(m.group(2).strip())
+        lm = _CITE_LABEL_RE.match(m.group(1).strip())
+        if not hm or not lm:
+            return m.group(0)  # not a line citation -- leave ordinary links alone
+        ha, hb = int(hm.group(2)), int(hm.group(3) or hm.group(2))
+        la, lb = int(lm.group(2)), int(lm.group(3) or lm.group(2))
+        if lm.group(1) != hm.group(1) or (la, lb) != (ha, hb):
+            return m.group(0)  # label/href disagree -- don't guess
+        r = resolve(hm.group(1), ha, hb)
+        if r is None:
+            return m.group(0)
+        path, a, b = r
+        return f"[{path}:L{a}-L{b}]({path}#L{a}-L{b})"
+
+    return _MD_LINK.sub(repl, text)
 
 
 def requires_evidence(md_text: str) -> bool:
