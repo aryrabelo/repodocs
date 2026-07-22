@@ -47,24 +47,17 @@ Run the full pipeline in any repo — no clone, no install:
 
 ```bash
 cd /path/to/project
-uvx --from git+https://github.com/aryrabelo/repodocs repodocs-all .
+uvx --from repodocs repodocs-all .   # run without installing
 ```
 
 Open `repo-docs/wiki.html` in a browser. That's it.
-
-<!-- After PyPI publish (Phase 2), replace the block above with the friction-free:
-```bash
-uvx repodocs .            # try without installing
-uv tool install repodocs  # install persistently
-```
--->
 
 ### Install persistently
 
 Keep `repodocs` / `repodocs-all` on `PATH`:
 
 ```bash
-uv tool install git+https://github.com/aryrabelo/repodocs
+uv tool install repodocs
 uv tool update-shell
 repodocs --version
 ```
@@ -96,7 +89,7 @@ playwright.
 5. **Internet access** — for the backend API, `graphify`, and `git`.
 
 Then, from any repo:
-`uvx --from git+https://github.com/aryrabelo/repodocs repodocs-all .`
+`uvx --from repodocs repodocs-all .`
 (or clone this repo and run `uv run repodocs-all /path/to/project`). Output lands
 in `repo-docs/wiki.html`.
 
