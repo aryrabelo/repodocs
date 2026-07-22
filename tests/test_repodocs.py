@@ -209,13 +209,15 @@ def selftest():
     assert "<b>bold</b>" not in injected and "&lt;b&gt;bold&lt;/b&gt;" in injected, injected
     assert '"onmouseover="' not in injected and "%22onmouseover%3D%22" in injected, injected
 
-    # citation-safety guard (pure, no subprocess); untracked (??) lines are ignored
+    # citation-safety guard (pure, no subprocess). Untracked ("??") entries are harmless
+    # ONLY under out_rel (generated output); any other untracked path is dirty (fail-safe).
     assert citations_safe("", " origin/main\n") == (True, None)
-    assert citations_safe("?? new.md\n?? repo-docs/\n", " origin/main\n") == (True, None)
+    assert citations_safe("?? repo-docs/x.md\n", " origin/main\n", "repo-docs") == (True, None)
+    assert citations_safe("?? new.md\n", " origin/main\n")[0] is False  # untracked, no out_rel -> dirty
     assert citations_safe(" M repodocs\n", " origin/main\n")[0] is False
     assert citations_safe("", "")[1] == "HEAD not pushed"
     assert citations_safe(" M x\n", "")[1] == "working tree dirty"
-    assert citations_safe("?? only-untracked\n", "")[1] == "HEAD not pushed"
+    assert citations_safe("?? only-untracked\n", "")[1] == "working tree dirty"
 
     # deterministic nav grouping
     g = group_pages(["overview", "prompt-queue", "architecture", "interop-x", "testing", "limitations"])

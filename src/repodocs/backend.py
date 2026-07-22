@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 import tempfile
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -93,7 +94,34 @@ def failure_detail(result: subprocess.CompletedProcess) -> str:
     return (result.stderr or result.stdout or "no diagnostic output").strip()[:200]
 
 
+_CODEX_READ_WARNING_SHOWN = False
+
+
+def _warn_codex_read_boundary() -> None:
+    """One-time stderr warning: `codex exec --sandbox read-only` only blocks writes.
+    It is NOT a read boundary -- untrusted repo content (e.g. an adversarial README or
+    source comment) could still make the model read and exfiltrate files outside the
+    repo through the generated docs. Do not point the codex backend at untrusted
+    repositories; a real fix needs a container/VM-level read boundary, which is out of
+    scope for this CLI."""
+    global _CODEX_READ_WARNING_SHOWN
+    if _CODEX_READ_WARNING_SHOWN:
+        return
+    _CODEX_READ_WARNING_SHOWN = True
+    print(
+        "warning: --backend codex uses `--sandbox read-only`, which blocks writes but "
+        "does NOT restrict reads -- it cannot stop the model from reading or "
+        "exfiltrating files outside the target repo. Do not use the codex backend on "
+        "untrusted repositories.",
+        file=sys.stderr,
+    )
+
+
 def run_llm(repo: Path, prompt: str) -> subprocess.CompletedProcess:
+    """Dispatch `prompt` to the configured backend CLI over `repo`.
+
+    SECURITY NOTE (codex backend only): `--sandbox read-only` restricts writes, not
+    reads -- see _warn_codex_read_boundary() for the documented limitation."""
     timeout = int(os.environ.get("REPODOCS_TIMEOUT", "600"))
     backend = backend_name()
     model = effective_model(backend)
@@ -120,6 +148,7 @@ def run_llm(repo: Path, prompt: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             cmd, input=prompt, cwd=repo, capture_output=True, text=True, timeout=timeout
         )
+    _warn_codex_read_boundary()
     with tempfile.TemporaryDirectory(prefix="repodocs-codex-") as td:
         output = Path(td) / "last-message.txt"
         repo_view = Path(td) / "repo"

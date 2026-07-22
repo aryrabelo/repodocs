@@ -1,5 +1,6 @@
 """repodocs.render -- internal module (see the repodocs package)."""
 
+import html
 import json
 import re
 import sys
@@ -12,11 +13,24 @@ from .gitlinks import _git_out, citations_safe, github_base, rewrite_citation_li
 
 
 CDN_ASSETS = {
-    "marked": "https://cdn.jsdelivr.net/npm/marked@12/marked.min.js",
-    "mermaid": "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js",
-    "hljs": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/highlight.min.js",
-    "hljscss": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/styles/github-dark.min.css",
-    "dompurify": "https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js",
+    "marked": "https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js",
+    "mermaid": "https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.min.js",
+    "hljs": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/highlight.min.js",
+    "hljscss": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/styles/github-dark.min.css",
+    "dompurify": "https://cdn.jsdelivr.net/npm/dompurify@3.4.12/dist/purify.min.js",
+}
+
+
+# Subresource Integrity for the pinned CDN_ASSETS above (sha384, base64), computed from the
+# exact pinned files so a tampered/compromised CDN response is rejected by the browser
+# instead of executing silently. Vendored/offline mode serves local files under different
+# bytes and does not use these -- see _asset_sri_attr()/render_html().
+SRI = {
+    "marked": "sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi",
+    "mermaid": "sha384-T/0lMUdJpd2S1ZHtRiofG3htU3xPCrFVeAQ1UUE2TJwlEJSV5NUwn30kP28n238E",
+    "hljs": "sha384-RH2xi4eIQ/gjtbs9fUXM68sLSi99C7ZWBRX1vDrVv6GQXRibxXLbwO2NGZB74MbU",
+    "hljscss": "sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH",
+    "dompurify": "sha384-piCcpDdJ7qVeK4Tv8Z6Hpcr3ZBIgP16TxQTPVfsLFdZ5uDgwc3Y8Ho7oUnqf12qu",
 }
 
 
@@ -189,7 +203,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__ Wiki</title>
-<link rel="stylesheet" href="__HLJSCSS__">
+<link rel="stylesheet" href="__HLJSCSS__"__HLJSCSS_SRI__>
 <style>
   :root { --bar:56px; --side:240px; --toc:220px; }
   * { box-sizing:border-box; }
@@ -250,10 +264,10 @@ HTML_TEMPLATE = r"""<!doctype html>
 </aside>
 <main><article id="content"></article></main>
 <aside class="toc" id="toc"></aside>
-<script src="__MARKED__"></script>
-<script src="__MERMAID__"></script>
-<script src="__HLJS__"></script>
-<script src="__DOMPURIFY__"></script>
+<script src="__MARKED__"__MARKED_SRI__></script>
+<script src="__MERMAID__"__MERMAID_SRI__></script>
+<script src="__HLJS__"__HLJS_SRI__></script>
+<script src="__DOMPURIFY__"__DOMPURIFY_SRI__></script>
 <script>
 const PAGES = __PAGES__, GROUPS = __GROUPS__, ORDER = __ORDER__, REPO = __REPO__, LABELS = __LABELS__;
 if (window.mermaid) mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
@@ -355,22 +369,41 @@ window.addEventListener("hashchange", function () { const s = location.hash.slic
 """
 
 
+def _asset_sri_attr(vendor: bool, key: str) -> str:
+    """`integrity`/`crossorigin` attribute text for a CDN <script>/<link> tag, or '' for
+    vendored (local file) assets -- their bytes don't match the CDN hash and the browser
+    would refuse to load them if tagged with it."""
+    if vendor:
+        return ""
+    sri = SRI.get(key)
+    return f' integrity="{sri}" crossorigin="anonymous"' if sri else ""
+
+
 def render_html(breadcrumb: str, ghroot: str | None, data: dict,
                 groups: list[dict], order: list[str], vendor: bool, labels: dict) -> str:
     a = VENDOR_ASSETS if vendor else CDN_ASSETS
-    ghlink = (f'<a class="ghlink" href="{ghroot}" target="_blank" rel="noopener">{labels["github"]}</a>'
-              if ghroot else "")
+    # breadcrumb/ghroot can come from a repo dir name or a configured remote slug --
+    # untrusted text, so it's HTML-escaped before landing in the page (text nodes, and the
+    # href/text of the GitHub link) or script-string-escaped before landing in JS below.
+    safe_breadcrumb = html.escape(breadcrumb, quote=True)
+    ghlink = (f'<a class="ghlink" href="{html.escape(ghroot, quote=True)}" target="_blank" '
+              f'rel="noopener">{html.escape(labels["github"], quote=True)}</a>' if ghroot else "")
     # Replace __PAGES__ last so embedded page markdown can't clobber other tokens; escape </ for <script>.
     return (HTML_TEMPLATE
-            .replace("__TITLE__", breadcrumb)
-            .replace("__BREADCRUMB__", breadcrumb)
+            .replace("__TITLE__", safe_breadcrumb)
+            .replace("__BREADCRUMB__", safe_breadcrumb)
             .replace("__GHLINK__", ghlink)
             .replace("__MARKED__", a["marked"])
             .replace("__DOMPURIFY__", a["dompurify"])
             .replace("__MERMAID__", a["mermaid"])
             .replace("__HLJS__", a["hljs"])
             .replace("__HLJSCSS__", a["hljscss"])
-            .replace("__REPO__", json.dumps(breadcrumb))
+            .replace("__MARKED_SRI__", _asset_sri_attr(vendor, "marked"))
+            .replace("__DOMPURIFY_SRI__", _asset_sri_attr(vendor, "dompurify"))
+            .replace("__MERMAID_SRI__", _asset_sri_attr(vendor, "mermaid"))
+            .replace("__HLJS_SRI__", _asset_sri_attr(vendor, "hljs"))
+            .replace("__HLJSCSS_SRI__", _asset_sri_attr(vendor, "hljscss"))
+            .replace("__REPO__", json.dumps(breadcrumb).replace("</", "<\\/"))
             .replace("__LABELS__", json.dumps(labels))
             .replace("__GROUPS__", json.dumps(groups))
             .replace("__ORDER__", json.dumps(order))
@@ -397,8 +430,13 @@ def build_html(repo: Path, out: Path, vendor: bool = False) -> Path:
     ghroot = ("https://github.com/" + slug) if slug else None
     cite_base = base  # blob/<sha> citations only when the tree is clean AND HEAD is pushed
     if base:
+        try:
+            out_rel = out.resolve().relative_to(repo.resolve()).as_posix()
+        except ValueError:
+            out_rel = None  # out isn't inside repo; every untracked entry counts as dirty
         ok, why = citations_safe(_git_out(repo, "status", "--porcelain"),
-                                 _git_out(repo, "branch", "-r", "--contains", "HEAD"))
+                                 _git_out(repo, "branch", "-r", "--contains", "HEAD"),
+                                 out_rel)
         if not ok:
             print(f"citations left relative: {why}", file=sys.stderr)
             cite_base = None

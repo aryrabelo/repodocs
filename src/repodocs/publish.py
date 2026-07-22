@@ -6,13 +6,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 
 from pathlib import Path
 
 from ._util import die
 from .backend import failure_detail
-from .citations import enforce_citations
-from .gitlinks import _git_out, _github_slug, citations_safe, github_base, rewrite_citation_links, wiki_remote_url
+from .citations import citation_problems, enforce_citations
+from .gitlinks import _git_out, _github_slug, citations_safe, rewrite_citation_links, wiki_remote_url
 from .render import md_title
 
 
@@ -79,16 +80,21 @@ def stage_publish(out: Path, staging: Path) -> list[str]:
 
 def publish_push(repo: Path, staging: Path, branch: str, remote: str):
     """Push the staged tree as one orphan commit to <remote>/<branch> via a throwaway
-    detached worktree -- never touches the user's working tree or current branch."""
+    detached worktree -- never touches the user's working tree or current branch.
+    The worktree's local orphan branch uses a fresh uuid-scoped name (independent of
+    `branch`) so a second publish to the same target branch doesn't collide with a
+    leftover local ref from a prior publish; the push refspec still targets `branch`
+    on the remote regardless of the local branch's name."""
     parent = Path(tempfile.mkdtemp(prefix="repodocs-wt-"))
     wt = parent / "wt"  # must not pre-exist: `git worktree add` creates it
+    tmp_branch = f"repodocs-publish-{uuid.uuid4().hex}"
     try:
         subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(wt)],
                        check=True, capture_output=True, text=True)
-        subprocess.run(["git", "-C", str(wt), "checkout", "--orphan", branch],
+        subprocess.run(["git", "-C", str(wt), "checkout", "--orphan", tmp_branch],
                        check=True, capture_output=True, text=True)
         subprocess.run(["git", "-C", str(wt), "rm", "-rf", "--quiet", "."],
-                       capture_output=True, text=True)  # clear the orphan index + tree
+                       check=True, capture_output=True, text=True)  # clear the orphan index + tree
         for f in sorted(staging.rglob("*")):
             if f.is_file():
                 dst = wt / f.relative_to(staging)
@@ -102,6 +108,7 @@ def publish_push(repo: Path, staging: Path, branch: str, remote: str):
     finally:
         subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)],
                        capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(repo), "branch", "-D", tmp_branch], capture_output=True, text=True)
         subprocess.run(["git", "-C", str(repo), "worktree", "prune"], capture_output=True, text=True)
         shutil.rmtree(parent, ignore_errors=True)
 
@@ -110,7 +117,7 @@ PROTECTED_PUBLISH_BRANCHES = {"main", "master", "trunk"}
 
 
 PUBLISH_SECRET_PATTERNS = (
-    ("private key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")),
+    ("private key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----")),
     ("GitHub token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
     ("cloud/API key", re.compile(r"\b(?:AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,})\b")),
 )
@@ -133,7 +140,21 @@ def staged_secret_findings(staging: Path) -> list[tuple[str, int, str]]:
 
 
 def publish_branch_safe(branch: str) -> bool:
-    return branch.lower() not in PROTECTED_PUBLISH_BRANCHES
+    return branch.removeprefix("refs/heads/").lower() not in PROTECTED_PUBLISH_BRANCHES
+
+
+def _publishable_subdir_mds(out: Path) -> list[Path]:
+    """Content pages that stage_publish will actually stage: this wiki's own pages
+    plus one level of subdirs (translated variants), but only subdirs that have a
+    rendered wiki.html -- mirrors stage_publish's own put_wiki gate, so an
+    in-progress translation with no rendered html yet can't block publishing the
+    finished base wiki (or other finished subdirs)."""
+    mds = [p for p in out.glob("*.md") if p.name != "index.md"]
+    if out.is_dir():
+        for sub in sorted(p for p in out.iterdir() if p.is_dir() and p.name != "assets"):
+            if (sub / "wiki.html").is_file():
+                mds += [p for p in sub.glob("*.md") if p.name != "index.md"]
+    return mds
 
 
 def cmd_publish(repo: Path, out: Path, branch: str, remote: str, dry_run: bool,
@@ -150,7 +171,11 @@ def cmd_publish(repo: Path, out: Path, branch: str, remote: str, dry_run: bool,
     if "cdn.jsdelivr.net" in wiki.read_text():
         print("warning: wiki.html uses CDN tags (works when hosted; not offline) -- "
               "rebuild with `repodocs html ... --vendor` for a self-contained page", file=sys.stderr)
-    enforce_citations(repo, out, subdirs=True, cmd="publish")
+    problems = citation_problems(repo, _publishable_subdir_mds(out))
+    if problems:
+        details = "; ".join(f"{page} {cite} -- {why}" for page, cite, why in problems[:12])
+        more = "" if len(problems) <= 12 else f" (+{len(problems) - 12} more)"
+        die(f"publish blocked: citation problems -- {details}{more}", 1)
     staging = Path(tempfile.mkdtemp(prefix="repodocs-stage-"))
     try:
         staged = stage_publish(out, staging)
@@ -192,8 +217,8 @@ def stage_wiki(out: Path, staging: Path, base: str | None) -> list[str]:
     staged as a page. A _Sidebar.md is generated from plan.json order/titles
     (falling back to each page's own `# heading` when the plan has no title).
     Citation links are rewritten to absolute `base` blob URLs when given.
-    Symlinked source files are rejected before any read. Returns the sorted
-    list of staged relative paths."""
+    Symlinked source files (including plan.json) are rejected before any read.
+    Returns the sorted list of staged relative paths."""
     staged: list[str] = []
     staging.mkdir(parents=True, exist_ok=True)
     mds = sorted(p for p in out.glob("*.md") if p.name != "index.md")
@@ -218,7 +243,10 @@ def stage_wiki(out: Path, staging: Path, base: str | None) -> list[str]:
             continue  # already staged as Home.md
         put(read(p, f"{p.stem}.md"), f"{p.stem}.md")
 
-    pages = _pages_for(out / "plan.json", present)
+    plan_path = out / "plan.json"
+    if plan_path.is_symlink():
+        raise ValueError("refusing to stage symlink: plan.json")
+    pages = _pages_for(plan_path, present)
     lines = ["# Pages", ""]
     if home is not None:
         lines.append("- [Home](Home)")
@@ -256,26 +284,51 @@ def _wiki_git(clone: Path, *args: str, label: str) -> subprocess.CompletedProces
     return result
 
 
+# Matches git's two "there's nothing there to clone" phrasings -- a github.com
+# remote with no wiki pages yet ("Repository not found.") and a bare/local
+# remote path that doesn't exist ("repository '...' does not exist"). Deliberately
+# narrow so auth failures ("Authentication failed", "Permission denied"), network
+# failures ("Could not resolve host"), and other real errors fall through to
+# WikiPublishError with their genuine detail intact instead of being hidden.
+_WIKI_UNINITIALIZED_RE = re.compile(r"repository.*(?:not found|does not exist)", re.IGNORECASE | re.DOTALL)
+
+
+def _reject_symlink_dest(root: Path, rel: str) -> Path:
+    """Resolve `rel` under `root`, refusing to write through any existing
+    symlinked path component (file or directory) -- so a wiki clone containing
+    a symlink can't redirect a publish write to an arbitrary local path."""
+    dst = root
+    for part in Path(rel).parts:
+        dst = dst / part
+        if dst.is_symlink():
+            raise ValueError(f"refusing to write through symlink: {rel}")
+    return dst
+
+
 def publish_wiki_push(wiki_url: str, staged: list[str], staging: Path) -> str | None:
     """Clone `wiki_url` into a tempdir, overwrite only the staged filenames (any
     other, manually-added wiki pages are left untouched), commit only if the
     tree changed, and push normally -- never force. Never touches the source
     repo's working tree. Returns the new commit sha, or None if nothing
     changed. Raises WikiNotInitialized when the wiki has no pages to clone,
-    or WikiPublishError for any other git failure along the way."""
+    or WikiPublishError for any other git failure along the way (including a
+    non-uninitialized clone failure, e.g. auth or network)."""
     clone = Path(tempfile.mkdtemp(prefix="repodocs-wiki-"))
     try:
         result = subprocess.run(["git", "clone", "--depth", "1", wiki_url, str(clone)],
                                 capture_output=True, text=True)
         if result.returncode != 0:
-            raise WikiNotInitialized(
-                f"could not clone {wiki_url}: {failure_detail(result)}\n"
-                "the GitHub Wiki has no pages yet -- enable it (repo Settings -> "
-                "Features -> Wikis) and create the first Home page in the GitHub "
-                "UI, then retry `repodocs publish-wiki`"
-            )
+            detail = failure_detail(result)
+            if _WIKI_UNINITIALIZED_RE.search(detail):
+                raise WikiNotInitialized(
+                    f"could not clone {wiki_url}: {detail}\n"
+                    "the GitHub Wiki has no pages yet -- enable it (repo Settings -> "
+                    "Features -> Wikis) and create the first Home page in the GitHub "
+                    "UI, then retry `repodocs publish-wiki`"
+                )
+            raise WikiPublishError(f"git clone failed: {detail}")
         for rel in staged:
-            dst = clone / rel
+            dst = _reject_symlink_dest(clone, rel)
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(staging / rel, dst)
         _wiki_git(clone, "add", "-A", "--", *staged, label="add")
@@ -293,7 +346,7 @@ def publish_wiki_push(wiki_url: str, staged: list[str], staging: Path) -> str | 
 
 
 def cmd_publish_wiki(repo: Path, out: Path, remote: str, dry_run: bool, allow_public: bool = False) -> int:
-    mds = [p for p in out.glob("*.md") if p.name != "index.md"]
+    mds = list(out.glob("*.md"))
     if not mds:
         die(f"no .md pages in {out}; run `repodocs generate {repo}` first", 1)
     url = _git_out(repo, "remote", "get-url", remote).strip()
@@ -302,17 +355,31 @@ def cmd_publish_wiki(repo: Path, out: Path, remote: str, dry_run: bool, allow_pu
     wiki_url = wiki_remote_url(url)
     if not wiki_url:
         die(f"remote '{remote}' ({url}) is not a github.com remote; wiki publish needs github", 1)
-    base = github_base(repo)
+    # Blob base and the pushed-HEAD check are both derived from the SELECTED remote
+    # (not hardcoded to origin), so --remote <name> citations link to, and are
+    # gated on, the repo the wiki is actually being published against.
+    base = None
+    slug = _github_slug(url)
+    head_sha = _git_out(repo, "rev-parse", "HEAD").strip()
+    if slug and re.match(r"^[0-9a-f]{7,40}$", head_sha):
+        base = f"https://github.com/{slug}/blob/{head_sha}"
     if base:
+        try:
+            out_rel = out.resolve().relative_to(repo.resolve()).as_posix()
+        except ValueError:
+            out_rel = None  # out isn't inside repo; every untracked entry counts as dirty
         ok, why = citations_safe(_git_out(repo, "status", "--porcelain"),
-                                 _git_out(repo, "branch", "-r", "--contains", "HEAD"))
+                                 _git_out(repo, "branch", "-r", "--contains", "HEAD", "--list", f"{remote}/*"),
+                                 out_rel)
         if not ok:
             print(f"citations left relative: {why}", file=sys.stderr)
             base = None
-    enforce_citations(repo, out, subdirs=False, cmd="publish-wiki")
     staging = Path(tempfile.mkdtemp(prefix="repodocs-wikistage-"))
     try:
+        # Stage (and reject any symlinked source) before scanning citations, so a
+        # symlinked page can't be read by the citation scanner first.
         staged = stage_wiki(out, staging, base)
+        enforce_citations(repo, out, subdirs=False, cmd="publish-wiki")
         findings = staged_secret_findings(staging)
         if findings:
             details = ", ".join(f"{path}:{line} ({label})" for path, line, label in findings[:10])

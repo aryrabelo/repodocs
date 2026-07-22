@@ -7,7 +7,7 @@ import sys
 
 from pathlib import Path
 
-from ._util import die, log
+from ._util import SLUG_RE, die, log, safe_repo_file
 from .backend import backend_name, failure_detail, jobs_count, missing_resource_message, parallel_llm
 from .citations import lint_citations
 from .plan import load_plan
@@ -16,7 +16,7 @@ from .plan import load_plan
 def page_prompt(page: dict, repo: Path | None = None) -> str:
     files = "\n".join(f"  - {f}" for f in page.get("files", [])) or "  (none detected)"
     graph_hint = ""
-    if repo is not None and (repo / "graphify-out" / "graph.json").is_file():
+    if repo is not None and safe_repo_file(repo, "graphify-out/graph.json") is not None:
         graph_hint = (
             "A precomputed knowledge graph exists at graphify-out/graph.json "
             "(tree-sitter nodes/edges with file:line locations). Use it to locate "
@@ -83,8 +83,8 @@ def decide_page(repo: Path, out: Path, page: dict, hashes: dict, force: bool,
     hcache = hcache if hcache is not None else {}
     current = {}
     for f in page.get("files", []):
-        fp = repo / f
-        if not fp.is_file():
+        fp = safe_repo_file(repo, f)
+        if fp is None:
             continue
         if f not in hcache:
             hcache[f] = compute_file_hash(fp)
@@ -92,13 +92,33 @@ def decide_page(repo: Path, out: Path, page: dict, hashes: dict, force: bool,
     if force:
         return ("generate", "forced", current)
     md_exists = (out / f"{page['slug']}.md").is_file()
-    stored_files = hashes.get(page["slug"], {}).get("files", {})
+    record = hashes.get(page["slug"])
+    stored_files = record.get("files") if isinstance(record, dict) else None
+    stored_files = stored_files if isinstance(stored_files, dict) else {}
     action, reason = generate_decision(md_exists, stored_files, current)
     return (action, reason, current)
 
 
+def _safe_page(page: dict, out: Path) -> bool:
+    """True if page['slug'] is a plain filename component whose output path
+    resolves under `out`. A hand-edited plan.json is untrusted input."""
+    slug = page.get("slug")
+    if not isinstance(slug, str) or not SLUG_RE.match(slug):
+        print(f"skip: unsafe slug {slug!r} in plan.json", file=sys.stderr)
+        return False
+    try:
+        dest = (out / f"{slug}.md").resolve()
+        dest.relative_to(out.resolve())
+    except (ValueError, OSError):
+        print(f"skip: unsafe slug {slug!r} in plan.json", file=sys.stderr)
+        return False
+    return True
+
+
 def cmd_generate(repo: Path, out: Path, only: set[str] | None, dry_run: bool, force: bool) -> int:
-    pages = load_plan(repo, out, allow_omp=not dry_run)
+    all_pages = load_plan(repo, out, allow_omp=not dry_run)
+    all_pages = [p for p in all_pages if _safe_page(p, out)]  # untrusted plan.json: drop unsafe slugs first
+    pages = all_pages
     if only:
         pages = [p for p in pages if p["slug"] in only]
         if not pages:
@@ -157,7 +177,8 @@ def cmd_generate(repo: Path, out: Path, only: set[str] | None, dry_run: bool, fo
     save_hashes(out, hashes)
     written = [p for p in pages if (out / f"{p['slug']}.md").is_file()]
     lint_citations(repo, out, written)
-    write_index(repo, out, written)
+    all_written = [p for p in all_pages if (out / f"{p['slug']}.md").is_file()]
+    write_index(repo, out, all_written)  # index reflects the full plan, not a --pages subset
     _gitignore_notice(repo, out)
     if not written:
         print(f"no pages written; check {backend_name()} errors above", file=sys.stderr)
@@ -169,6 +190,8 @@ def _gitignore_notice(repo: Path, out: Path):
     try:
         rel = out.resolve().relative_to(repo.resolve())
     except ValueError:
+        return
+    if not rel.parts:  # out == repo root: no subdir to suggest .gitignore-ing
         return
     gi = repo / ".gitignore"
     entry = f"{rel.parts[0]}/"

@@ -38,6 +38,20 @@ def lint_citations(repo: Path, out: Path, pages: list[dict]):
 FULL_CITATION_RE = re.compile(r"\[([^\]\s]+?):L(\d+)-L(\d+)\]\(([^)\s]+)\)")
 
 
+_HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
+_FENCED_CODE_RE = re.compile(r"```[\s\S]*?```")
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+
+
+def _strip_noncounted(text: str) -> str:
+    """Remove HTML comments and code (fenced ``` blocks and inline `code`) so a
+    citation hidden there can't satisfy the citation gate -- only citations in
+    rendered prose count."""
+    text = _HTML_COMMENT_RE.sub("", text)
+    text = _FENCED_CODE_RE.sub("", text)
+    return _INLINE_CODE_RE.sub("", text)
+
+
 def citation_error(repo: Path, label_path: str, a: int, b: int, href: str) -> str | None:
     """Validate one `[path:La-Lb](href)` citation. Returns a reason string when
     the citation is dishonest, else None. Never echoes file contents."""
@@ -63,12 +77,20 @@ def citation_error(repo: Path, label_path: str, a: int, b: int, href: str) -> st
 
 def requires_evidence(md_text: str) -> bool:
     """A page needs a citation once it has prose beyond its title and the
-    'Relevant source files' bullet list."""
+    'Relevant source files' bullet list. List items are only exempt inside
+    that section -- a body list elsewhere still counts as content needing a
+    citation."""
+    in_sources_section = False
     for ln in md_text.splitlines():
         s = ln.strip()
-        if not s or s.startswith("#") or s.startswith(("- ", "* ")):
+        if not s:
+            continue
+        if s.startswith("#"):
+            in_sources_section = s.lstrip("#").strip().lower() == "relevant source files"
             continue
         if s.lower().startswith("sources:"):
+            continue
+        if in_sources_section and s.startswith(("- ", "* ")):
             continue
         return True
     return False
@@ -77,19 +99,27 @@ def requires_evidence(md_text: str) -> bool:
 def citation_problems(repo: Path, mds: list[Path]) -> list[tuple[str, str, str]]:
     """(page, citation-or-'-', reason) for every citation/evidence violation.
     A content page carrying no valid citation is itself a violation. This is the
-    blocking gate the 'source-cited' promise rests on -- warnings are not enough."""
+    blocking gate the 'source-cited' promise rests on -- warnings are not enough.
+    HTML comments and code are stripped first so a citation hidden there can't
+    count, and every bare `[path:La-Lb]` label lacking a linked href is itself
+    a violation (not just unlinked full citations with a bad href)."""
     problems: list[tuple[str, str, str]] = []
     for md in sorted(mds):
         if not md.is_file():
             continue
-        text = md.read_text()
+        text = _strip_noncounted(md.read_text())
         valid = 0
+        full_spans = set()
         for m in FULL_CITATION_RE.finditer(text):
+            full_spans.add(m.start())
             err = citation_error(repo, m.group(1), int(m.group(2)), int(m.group(3)), m.group(4))
             if err:
                 problems.append((md.name, m.group(0), err))
             else:
                 valid += 1
+        for m in CITATION_RE.finditer(text):
+            if m.start() not in full_spans:
+                problems.append((md.name, m.group(0), "citation label has no linked href"))
         if valid == 0 and requires_evidence(text):
             problems.append((md.name, "-", "content page has no valid source citation"))
     return problems

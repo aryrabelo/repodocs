@@ -43,19 +43,32 @@ def plan_pages(repo: Path, facts: dict) -> list[dict]:
             "files": top_candidates(src, lc),
         })
 
+    # ponytail: collision-safe slug allocation -- two distinct dir/module names can
+    # slugify to the same string (e.g. "Foo_Bar" and "foo-bar"); suffix -2/-3/... instead
+    # of silently overwriting one component's page with another's.
+    seen_slugs = {p["slug"] for p in pages}
+
+    def alloc_slug(base: str) -> str:
+        slug, n = base, 2
+        while slug in seen_slugs:
+            slug = f"{base}-{n}"
+            n += 1
+        seen_slugs.add(slug)
+        return slug
+
     comps: list[dict] = []
     dir_comps = {k: v for k, v in facts["top_dirs"].items() if k != "." and len(v) >= 2}
     if dir_comps:
         for name in sorted(dir_comps, key=lambda k: -len(dir_comps[k])):
             comps.append({
-                "slug": "component-" + slugify(name), "title": "Component: " + name,
+                "slug": alloc_slug("component-" + slugify(name)), "title": "Component: " + name,
                 "purpose": f"How the `{name}` component is organized and what it is responsible for.",
                 "files": top_candidates(dir_comps[name], lc),
             })
     else:
         for rel in sorted((r for r in src if lc.get(r, 0) >= 100 and not is_test(r)), key=lambda r: -lc.get(r, 0)):
             comps.append({
-                "slug": "component-" + slugify(Path(rel).stem), "title": "Module: " + Path(rel).name,
+                "slug": alloc_slug("component-" + slugify(Path(rel).stem)), "title": "Module: " + Path(rel).name,
                 "purpose": f"What `{rel}` implements and how it is used.", "files": [rel],
             })
     pages.extend(comps[:MAX_COMPONENTS])
@@ -82,10 +95,10 @@ def graph_digest(repo: Path, max_nodes: int = 25, max_files: int = 15) -> str:
     requires graphify; this only sharpens the planner when a graph exists."""
     p = repo / "graphify-out" / "graph.json"
     try:
-        g = json.loads(p.read_text())
+        g = json.loads(p.read_text(errors="replace"))
         nodes = g["nodes"]
         links = g.get("links") or g.get("edges") or []
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
         return ""
     if not isinstance(nodes, list) or not isinstance(links, list) or not links:
         return ""
@@ -128,9 +141,8 @@ def graph_digest(repo: Path, max_nodes: int = 25, max_files: int = 15) -> str:
     return "\n".join(out) + "\n\n"
 
 
-def planner_prompt(repo: Path, inv: dict) -> str:
-    files = "\n".join("  - " + f for f in inv["source_files"][:200]) or "  (no source files detected)"
-    heads = "\n".join("  " + h for h in inv["readme_headings"][:40]) or "  (no README headings)"
+def mandatory_slugs(inv: dict) -> list[str]:
+    """Slugs the planner (LLM or heuristic) must always emit for this repo's facts."""
     mandatory = ["overview"]
     if inv["has_readme"] or inv["manifests"]:
         mandatory.append("installation")
@@ -144,6 +156,13 @@ def planner_prompt(repo: Path, inv: dict) -> str:
         mandatory.append("contributing")
     if inv["tests"] or inv["ci"] or inv["has_contributing"]:
         mandatory.append("development")
+    return mandatory
+
+
+def planner_prompt(repo: Path, inv: dict) -> str:
+    files = "\n".join("  - " + f for f in inv["source_files"][:200]) or "  (no source files detected)"
+    heads = "\n".join("  " + h for h in inv["readme_headings"][:40]) or "  (no README headings)"
+    mandatory = mandatory_slugs(inv)
     return (
         "Plan the wiki pages for this repository, at DeepWiki/cubic.dev granularity.\n\n"
         "Granularity rule: ONE page per feature -- do NOT merge related features. "
@@ -197,7 +216,8 @@ def validate_pages(repo: Path, raw) -> list[dict]:
         if slug in seen:
             print(f"  drop: duplicate slug {slug!r}", file=sys.stderr)
             continue
-        files = [f for f in entry.get("files", []) if isinstance(f, str)]
+        files_raw = entry.get("files", [])
+        files = [f for f in files_raw if isinstance(f, str)] if isinstance(files_raw, list) else []
         good = [f for f in files if safe_repo_file(repo, f) is not None]
         for f in files:
             if f not in good:
@@ -226,8 +246,13 @@ def llm_plan(repo: Path, out: Path, dry_run: bool = False, force: bool = False):
     fp = plan_fingerprint(prompt)
     fp_file, pj = out / ".plan.hash", out / "plan.json"
     if not force and pj.is_file() and fp_file.is_file() and fp_file.read_text().strip() == fp:
-        log(f"plan: inventory unchanged, reusing {pj} (--force to replan)")
-        return json.loads(pj.read_text())
+        try:
+            cached = validate_pages(repo, json.loads(pj.read_text()))
+        except (OSError, json.JSONDecodeError, ValueError):
+            print(f"  {pj} is corrupt; replanning", file=sys.stderr)
+        else:
+            log(f"plan: inventory unchanged, reusing {pj} (--force to replan)")
+            return cached
     pages, from_llm = None, False
     try:
         model = llm_label()
@@ -241,6 +266,9 @@ def llm_plan(repo: Path, out: Path, dry_run: bool = False, force: bool = False):
         pages = validate_pages(repo, parse_pages(r.stdout))
         if not pages:
             raise ValueError("planner returned no valid pages")
+        missing = [s for s in mandatory_slugs(inv) if s not in {p["slug"] for p in pages}]
+        if missing:
+            raise ValueError(f"planner omitted mandatory slugs: {', '.join(missing)}")
         from_llm = True
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, json.JSONDecodeError) as e:
         print(f"planner unavailable ({e}); falling back to heuristic plan", file=sys.stderr)
@@ -257,7 +285,10 @@ def llm_plan(repo: Path, out: Path, dry_run: bool = False, force: bool = False):
 def load_plan(repo: Path, out: Path, allow_omp: bool = True) -> list[dict]:
     pj = out / "plan.json"
     if pj.is_file():
-        return json.loads(pj.read_text())
+        try:
+            return validate_pages(repo, json.loads(pj.read_text()))
+        except (OSError, json.JSONDecodeError, ValueError):
+            print(f"  {pj} is corrupt; replanning", file=sys.stderr)
     if allow_omp:
         print("no plan.json; running plan first", file=sys.stderr)
         return llm_plan(repo, out)

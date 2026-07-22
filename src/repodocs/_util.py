@@ -77,14 +77,15 @@ def count_lines(p: Path) -> int:
 def safe_repo_file(repo: Path, rel: str) -> Path | None:
     """Resolve repo-relative `rel` under `repo`, following symlinks. Return the
     real path only when it is a regular file that stays inside the repo; None for
-    absolute paths, `..` traversal, symlink escapes, NUL bytes, or non-files."""
+    absolute paths, `..` traversal, symlink escapes, NUL bytes, symlink loops, or
+    non-files."""
     if not rel or os.path.isabs(rel) or "\x00" in rel:
         return None
     try:
         root = repo.resolve()
         target = (root / rel).resolve()
         target.relative_to(root)
-    except (ValueError, OSError):
+    except (ValueError, OSError, RuntimeError):
         return None
     return target if target.is_file() else None
 

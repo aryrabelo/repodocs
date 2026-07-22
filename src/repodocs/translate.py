@@ -1,6 +1,7 @@
 """repodocs.translate -- internal module (see the repodocs package)."""
 
 import json
+import re
 import subprocess
 import sys
 
@@ -8,7 +9,7 @@ from pathlib import Path
 
 from ._util import die
 from .backend import backend_name, failure_detail, missing_resource_message, parallel_llm, run_llm
-from .citations import lint_citations
+from .citations import FULL_CITATION_RE, lint_citations
 from .generate import write_index
 from .plan import parse_pages
 from .publish import _pages_for
@@ -29,9 +30,28 @@ def translate_prompt(md: str, lang: str = "pt") -> str:
 SOURCES_HEADING = {"pt": "## Arquivos-fonte relevantes"}
 
 
+LANG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
 def localize_headings(md: str, lang: str) -> str:
+    """Replace the '## Relevant source files' H2 with its localized heading.
+    Only an actual H2 line (line starts with the heading, ignoring surrounding
+    whitespace) is replaced, and never inside a fenced ``` code block -- so the
+    literal text surviving in an example/snippet is left untouched."""
     repl = SOURCES_HEADING.get(lang)
-    return md.replace("## Relevant source files", repl, 1) if repl else md
+    if not repl:
+        return md
+    lines = md.split("\n")
+    in_fence = False
+    for i, ln in enumerate(lines):
+        stripped = ln.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence and stripped.startswith("## Relevant source files"):
+            lines[i] = ln.replace("## Relevant source files", repl, 1)
+            break
+    return "\n".join(lines)
 
 
 def translate_plan_prompt(reduced: list[dict], lang: str = "pt") -> str:
@@ -44,10 +64,14 @@ def translate_plan_prompt(reduced: list[dict], lang: str = "pt") -> str:
     )
 
 
-def translate_plan_file(repo: Path, src: Path, dest: Path, lang: str):
-    """Translate plan.json title/purpose (one LLM call); on failure copy untranslated."""
+def translate_plan_file(repo: Path, src: Path, dest: Path, lang: str) -> bool:
+    """Translate plan.json title/purpose (one LLM call); on failure copy
+    untranslated. Returns True on a real translation, False when the
+    untranslated fallback copy was used (so callers can flag the failure)."""
     try:
         original = json.loads(src.read_text())
+        if not isinstance(original, list):
+            raise ValueError(f"plan.json root is {type(original).__name__}, not a list")
         reduced = [{"slug": e["slug"], "title": e.get("title", ""), "purpose": e.get("purpose", "")}
                    for e in original if isinstance(e, dict) and e.get("slug")]
         r = run_llm(repo, translate_plan_prompt(reduced, lang))
@@ -64,12 +88,35 @@ def translate_plan_file(repo: Path, src: Path, dest: Path, lang: str):
             merged.append({**e, "title": t.get("title") or e.get("title"),
                            "purpose": t.get("purpose") or e.get("purpose")})
         dest.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n")
+        return True
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, json.JSONDecodeError, OSError) as ex:
         print(f"plan.json translation failed ({ex}); copied untranslated", file=sys.stderr)
         dest.write_text(src.read_text())
+        return False
+
+
+def _citation_drift(out: Path, dest: Path, pages: list[dict]) -> list[str]:
+    """Full `[path:La-Lb](href)` citations present in the source page that the
+    translated page dropped or altered. Comparing the full link (not just the
+    label) catches both removal and href tampering."""
+    problems = []
+    for p in pages:
+        src_p = out / f"{p['slug']}.md"
+        dst_p = dest / f"{p['slug']}.md"
+        if not src_p.is_file() or not dst_p.is_file():
+            continue
+        src_cites = set(FULL_CITATION_RE.findall(src_p.read_text()))
+        if not src_cites:
+            continue
+        missing = src_cites - set(FULL_CITATION_RE.findall(dst_p.read_text()))
+        if missing:
+            problems.append(f"{p['slug']}.md: {len(missing)} citation(s) dropped or altered")
+    return problems
 
 
 def cmd_translate(repo: Path, out: Path, lang: str, only: set[str] | None, force: bool) -> int:
+    if not LANG_RE.match(lang):
+        die(f"invalid --lang {lang!r}; expected a plain language code (letters, digits, '_', '-')", 1)
     srcs = sorted(p for p in out.glob("*.md") if p.name != "index.md")
     if not srcs:
         die(f"no .md pages in {out}; run `repodocs generate {repo}` first", 1)
@@ -110,10 +157,15 @@ def cmd_translate(repo: Path, out: Path, lang: str, only: set[str] | None, force
         (dest / name).write_text(localize_headings(res.stdout, lang))
         print(f"[done] {stem}", file=sys.stderr)
     src_plan = out / "plan.json"
-    if src_plan.is_file():
-        translate_plan_file(repo, src_plan, dest / "plan.json", lang)
+    if src_plan.is_file() and not translate_plan_file(repo, src_plan, dest / "plan.json", lang):
+        failed += 1
     present = {p.stem for p in dest.glob("*.md") if p.name != "index.md"}
     pages = _pages_for(dest / "plan.json", present)
-    lint_citations(repo, dest, pages)  # verifies citations survived translation intact
+    lint_citations(repo, dest, pages)  # warns on citations pointing at invalid line ranges
+    drift = _citation_drift(out, dest, pages)
+    if drift:
+        details = "; ".join(drift[:5])
+        more = "" if len(drift) <= 5 else f" (+{len(drift) - 5} more)"
+        die(f"translate blocked: citations dropped or altered in translation -- {details}{more}", 1)
     write_index(repo, dest, pages)
     return 1 if failed else 0

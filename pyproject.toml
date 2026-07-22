@@ -34,6 +34,12 @@ packages = ["src/repodocs"]
 # artifacts re-includes this vendored contract file in the wheel.
 artifacts = ["src/repodocs/repo-docs-profile/AGENTS.md"]
 
+[tool.hatch.build.targets.sdist]
+# Same re-include as the wheel target above: without this, a wheel built from the
+# sdist (rather than from the git checkout) is missing the vendored AGENTS.md and
+# backend_contract() fails for it.
+artifacts = ["src/repodocs/repo-docs-profile/AGENTS.md"]
+
 [tool.ruff]
 target-version = "py310"
 line-length = 120
