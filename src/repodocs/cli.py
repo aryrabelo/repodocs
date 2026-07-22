@@ -8,6 +8,7 @@ Pipeline:
   html      bundle pages into a self-contained wiki.html viewer
   publish   push the built wiki to a GitHub Pages branch
   publish-wiki export generated pages to the repo's GitHub Wiki
+  render-diagrams pre-render mermaid blocks to committed PNGs (optional; needs Bun)
   all       graphify + scan + plan + generate + vendored html in one command
 
 Usage:
@@ -18,6 +19,7 @@ Usage:
     repodocs html [repo] [--out DIR] [--vendor]
     repodocs publish [repo] [--out DIR] [--branch gh-pages] [--remote origin] [--dry-run]
     repodocs publish-wiki [repo] [--out DIR] [--remote origin] [--dry-run | --allow-public]
+    repodocs render-diagrams [repo] [--out DIR]
     repodocs all [repo] [--out DIR] [--force] [--no-graph]
     repodocs setup [--force]
     repodocs help | -h | --help
@@ -52,6 +54,7 @@ from pathlib import Path
 from . import VERSION
 from ._util import die
 from .backend import PROFILE_SOURCE, require_backend
+from .diagrams import cmd_render_diagrams
 from .generate import cmd_generate, render_plan_table
 from .plan import llm_plan, plan_pages
 from .publish import cmd_publish, cmd_publish_wiki
@@ -393,6 +396,23 @@ def cmd_publish_wiki_cli(args: list[str]):
     remote = get_flag(args, "--remote") or "origin"
     sys.exit(cmd_publish_wiki(repo, out, remote, "--dry-run" in args, "--allow-public" in args))
 
+RENDER_DIAGRAMS_HELP = """repodocs render-diagrams [repo] [--out DIR]
+
+Render every ```mermaid``` block in <out>/*.md to a committed pastel PNG and
+replace the block with an image embed, so a GitHub wiki shows the diagram even
+when GitHub's mermaid renderer fails to load. Blocks that don't render keep
+their raw fence. Optional and clone-only: needs Bun + playwright (see the
+README "Optional: diagram posters"); not part of the zero-dependency core.
+Run after `generate`/`all` and before `publish-wiki`."""
+
+
+def cmd_render_diagrams_cli(args: list[str]):
+    if "--help" in args or "-h" in args:
+        print(RENDER_DIAGRAMS_HELP)
+        return
+    repo = parse_repo_and_flags(args)
+    out = Path(get_flag(args, "--out") or (repo / "repo-docs"))
+    sys.exit(cmd_render_diagrams(repo, out))
 
 def main(argv: list[str]):
     if not argv:
@@ -417,6 +437,8 @@ def main(argv: list[str]):
         cmd_publish_cli(rest)
     elif cmd == "publish-wiki":
         cmd_publish_wiki_cli(rest)
+    elif cmd == "render-diagrams":
+        cmd_render_diagrams_cli(rest)
     elif cmd == "all":
         sys.exit(cmd_all(rest))
     elif cmd == "setup":

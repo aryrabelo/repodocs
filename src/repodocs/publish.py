@@ -242,6 +242,9 @@ def stage_wiki(out: Path, staging: Path, base: str | None) -> list[str]:
         if p.stem == "overview":
             continue  # already staged as Home.md
         put(read(p, f"{p.stem}.md"), f"{p.stem}.md")
+    for png in sorted(out.glob("*.png")):  # committed diagram images (render-diagrams)
+        shutil.copy2(png, staging / png.name)
+        staged.append(png.name)
 
     plan_path = out / "plan.json"
     if plan_path.is_symlink():
