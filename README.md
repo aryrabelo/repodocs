@@ -10,7 +10,9 @@
 
 ![RepoDocs — point it at a repo, get a source-cited wiki](docs/assets/hero.gif)
 
-▶ **[Watch the demo](docs/assets/hero.mp4)**
+[![RepoDocs — watch the 48-second narrated demo](docs/assets/demo-poster.png)](https://github.com/aryrabelo/repodocs/raw/main/docs/assets/demo.mp4)
+
+▶ **[Watch the 48-second narrated demo](https://github.com/aryrabelo/repodocs/raw/main/docs/assets/demo.mp4)**
 
 If RepoDocs is useful to you, please ⭐ the repo — it helps others find it.
 
