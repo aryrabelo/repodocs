@@ -8,7 +8,7 @@
 
 ## Checklist
 
-- [ ] `python3 repodocs --selftest` passes
+- [ ] `uvx --from . repodocs --selftest` passes
 - [ ] The affected backend or command was smoke-tested when behavior changed
 - [ ] README and CHANGELOG were updated when user-visible behavior changed
 - [ ] No runtime dependency was added without prior discussion
