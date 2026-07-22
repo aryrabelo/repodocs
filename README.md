@@ -40,7 +40,7 @@ maintainers who want docs they can trust — and never hand-write again.
 
 ## Quick start
 
-**Prerequisites:** Python 3.10+ and [uv](https://docs.astral.sh/uv/). No uv yet?
+**Prerequisites:** Python 3.10+, [uv](https://docs.astral.sh/uv/), and graphify (`uv tool install graphifyy`) — or pass `--no-graph` to skip it. No uv yet?
 `curl -LsSf https://astral.sh/uv/install.sh | sh`
 
 Run the full pipeline in any repo — no clone, no install:
