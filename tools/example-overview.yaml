@@ -1,0 +1,9 @@
+title: "Overview"
+kicker: "REPODOCS · OVERVIEW"
+headline: "Overview"
+mermaid: |
+  flowchart LR
+    A["graphify"] --> B["scan"] --> C["plan"] --> D["generate"] --> E["html"] --> F["wiki.html"]
+footer:
+  left: "REPODOCS"
+  right: "OVERVIEW"

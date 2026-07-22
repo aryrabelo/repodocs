@@ -27,6 +27,7 @@ maintainers who want docs they can trust — and never hand-write again.
 
 ## Contents
 
+- [See it in action](#see-it-in-action)
 - [Quick start](#quick-start)
 - [Setup on a new machine](#setup-on-a-new-machine)
 - [Why RepoDocs and not the alternatives](#why-repodocs-and-not-the-alternatives)
@@ -37,6 +38,10 @@ maintainers who want docs they can trust — and never hand-write again.
 - [Non-goals](#non-goals)
 - [Development](#development)
 - [License](#license)
+
+## See it in action
+
+RepoDocs documents itself — **[browse the wiki it generated for this repo](https://github.com/aryrabelo/repodocs/wiki)**. Every page is written from the source and cites the exact file and lines behind each claim (its Architecture page, for example, links each statement to `src/repodocs/*.py` at a pinned commit), and each diagram is a pre-rendered image so it always renders. That whole wiki came from a single `repodocs-all .` run (see [Quick start](#quick-start)) — nothing hand-written.
 
 ## Quick start
 
@@ -104,10 +109,13 @@ This is **not** part of the zero-dependency core — it needs:
 3. **A chromium browser** — `bunx playwright install chromium` (downloads
    ~150 MB the first time).
 
-Render: `bun tools/diagram_poster.ts tools/example-architecture.yaml --png`
-writes `tools/example-architecture.png`. Edit the YAML (a mermaid block plus an
-editorial shell) for your own diagram. To use it in a GitHub wiki, commit the
-PNG into the `<repo>.wiki.git` repo and reference it with `![alt](name.png)`.
+Render: `bun tools/diagram_poster.ts tools/example-overview.yaml --png` writes
+`tools/example-overview.png` — the poster shown below. Edit the YAML (a mermaid
+block plus an editorial shell) for your own diagram. To put diagrams in a GitHub
+wiki, run `repodocs render-diagrams .` — it swaps every mermaid block for a
+committed PNG, and `publish-wiki` then ships the images alongside the pages.
+
+![Example RepoDocs diagram poster](tools/example-overview.png)
 
 ## Why RepoDocs and not the alternatives
 
@@ -154,12 +162,16 @@ scans output for private-key/token patterns, and requires `--allow-public`. Alwa
 matches no token pattern — **review the dry-run file list before publishing a
 private repo's wiki.** GitHub Wiki export (`publish-wiki`) is also supported.
 
+### First-time GitHub Wiki setup
+
+`publish-wiki` pushes to your repo's wiki (`github.com/<owner>/<repo>.wiki.git`), but GitHub only creates that wiki repo **after its first page exists**. Once, in the GitHub UI: **Settings → Features → enable Wikis**, then open the **Wiki** tab and **create the first page** (a `Home` page with any content — `publish-wiki` overwrites it). After that, `repodocs publish-wiki . --dry-run` then `--allow-public` works, and re-runs update the pages in place.
+
 ## Upgrading
 
 ```bash
 uv tool upgrade repodocs                                   # if installed as a tool
-# or reinstall from git:
-uv tool install --force git+https://github.com/aryrabelo/repodocs
+# or force the latest:
+uv tool install --force repodocs
 ```
 
 ## Non-goals
