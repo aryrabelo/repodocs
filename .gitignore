@@ -24,3 +24,8 @@ ultrareview/
 dist/
 build/
 *.egg-info/
+
+# Optional Bun diagram tool (tools/)
+node_modules/
+bun.lock
+bun.lockb

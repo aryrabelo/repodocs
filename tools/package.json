@@ -1,0 +1,8 @@
+{
+  "name": "repodocs-tools",
+  "private": true,
+  "description": "Optional Bun tooling for repodocs (diagram pre-rendering). Not part of the zero-dependency Python core.",
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}

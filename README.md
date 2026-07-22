@@ -28,6 +28,7 @@ maintainers who want docs they can trust — and never hand-write again.
 ## Contents
 
 - [Quick start](#quick-start)
+- [Setup on a new machine](#setup-on-a-new-machine)
 - [Why RepoDocs and not the alternatives](#why-repodocs-and-not-the-alternatives)
 - [Choose an LLM backend](#choose-an-llm-backend)
 - [Pipeline commands](#pipeline-commands)
@@ -72,6 +73,48 @@ repodocs --version
 
 In Claude Code / OMP / Codex, just ask the agent to run `repodocs-all .` and open
 the wiki. RepoDocs is a CLI your agent calls — not an in-process plugin.
+
+## Setup on a new machine
+
+Everything runs locally. There are two independent parts: the **core pipeline**
+(all you need to generate a wiki) and an **optional diagram tool**. The core has
+zero runtime dependencies beyond Python's stdlib; the optional tool adds Bun +
+playwright.
+
+### Core pipeline (required)
+
+1. **Python 3.10+** — check with `python3 --version`.
+2. **[uv](https://docs.astral.sh/uv/)** — `curl -LsSf https://astral.sh/uv/install.sh | sh`
+3. **A backend CLI, logged in** (this is what writes the pages) — pick one:
+   - Claude Code (default): install `claude`, run it once and `/login`.
+   - OMP: `export REPODOCS_BACKEND=omp`, then `repodocs setup` and `omp --profile=repo-docs` `/login`.
+   - Codex: `export REPODOCS_BACKEND=codex`, then `codex login`.
+
+   Details in [Choose an LLM backend](#choose-an-llm-backend).
+4. **graphify** — `uv tool install graphifyy` (sharpens planning). Or skip it by
+   passing `--no-graph` to `repodocs-all`.
+5. **Internet access** — for the backend API, `graphify`, and `git`.
+
+Then, from any repo:
+`uvx --from git+https://github.com/aryrabelo/repodocs repodocs-all .`
+(or clone this repo and run `uv run repodocs-all /path/to/project`). Output lands
+in `repo-docs/wiki.html`.
+
+### Optional: diagram posters (`tools/`)
+
+GitHub's mermaid renderer intermittently fails to load in wikis. To publish a
+pre-rendered pastel PNG of a diagram instead, use `tools/diagram_poster.ts`.
+This is **not** part of the zero-dependency core — it needs:
+
+1. **[Bun](https://bun.sh/)** — `curl -fsSL https://bun.sh/install | bash`
+2. **playwright** — `cd tools && bun install`
+3. **A chromium browser** — `bunx playwright install chromium` (downloads
+   ~150 MB the first time).
+
+Render: `bun tools/diagram_poster.ts tools/example-architecture.yaml --png`
+writes `tools/example-architecture.png`. Edit the YAML (a mermaid block plus an
+editorial shell) for your own diagram. To use it in a GitHub wiki, commit the
+PNG into the `<repo>.wiki.git` repo and reference it with `![alt](name.png)`.
 
 ## Why RepoDocs and not the alternatives
 

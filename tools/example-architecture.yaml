@@ -1,0 +1,33 @@
+title: RepoDocs — architecture
+kicker: "REPODOCS · HOW THE PIPELINE FITS TOGETHER"
+headline: "One CLI drives a [hl]deterministic pipeline[/hl]; every page is [hlg]source-cited[/hlg] before it ships."
+sub: "scan → plan → generate → html → publish, with the citation gate guarding every page."
+
+mermaid: |
+  flowchart LR
+      CLI["📟 cli.py<br/>main"]:::paper -->|"scan"| SCAN["🔍 scan.py"]:::paper
+      CLI -->|"plan"| PLAN["🗂️ plan.py"]:::paper
+      CLI -->|"generate"| GEN["✍️ generate.py"]:::paper
+      CLI -->|"html"| RENDER["📄 render.py"]:::paper
+      CLI -->|"publish-wiki"| PUBW["🌐 publish.py<br/>publish_wiki"]:::green
+      SCAN -->|"inventory"| PLAN
+      PLAN -->|"prompt"| BACKEND["☁️ backend.py<br/>Claude · OMP · Codex"]:::blue
+      PLAN -->|"plan.json"| GEN
+      GEN -->|"prompt/page"| BACKEND
+      GEN -->|"every claim"| CITE["🔗 citations.py<br/>file:line gate"]:::yellow
+      GEN -->|"*.md"| RENDER
+      RENDER -->|"wiki.html"| HTML["📦 offline wiki.html"]:::green
+      GEN -->|"*.md"| PUBW
+      CITE -.->|"blocks dishonest pages"| PUBW
+
+legend:
+  - { color: paper, label: "pipeline stage" }
+  - { color: blue, label: "LLM backend (external)" }
+  - { color: yellow, label: "citation gate" }
+  - { color: green, label: "published output" }
+
+band: "The pipeline is deterministic. The [hl]citation gate[/hl] is what makes the wiki trustworthy."
+
+footer:
+  left: "ARYRABELO/REPODOCS · ARCHITECTURE"
+  right: "2026-07-22"
