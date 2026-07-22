@@ -232,6 +232,7 @@ HTML_TEMPLATE = r"""<!doctype html>
   article h1,article h2,article h3,article h4 { color:#fff; line-height:1.25; }
   article h1 { border-bottom:1px solid #1f1f22; padding-bottom:.4rem; }
   article pre { padding:1rem; overflow:auto; border-radius:8px; background:#141416; border:1px solid #1f1f22; }
+  article img { max-width:100%; height:auto; border-radius:8px; }
   article code { background:#27272a; padding:.12em .4em; border-radius:4px; font-size:.88em; }
   article pre code { background:none; padding:0; }
   article table { border-collapse:collapse; }
