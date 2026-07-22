@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ._util import SLUG_RE, die, log, safe_repo_file
 from .backend import backend_name, failure_detail, jobs_count, missing_resource_message, parallel_llm
-from .citations import lint_citations
+from .citations import lint_citations, repair_citations
 from .plan import load_plan
 
 
@@ -168,7 +168,7 @@ def cmd_generate(repo: Path, out: Path, only: set[str] | None, dry_run: bool, fo
             print(f"  {slug}: {backend_name()} exit {res.returncode}: {failure_detail(res)}", file=sys.stderr)
             failed += 1
             continue
-        (out / f"{slug}.md").write_text(res.stdout)
+        (out / f"{slug}.md").write_text(repair_citations(repo, res.stdout))
         hashes[slug] = {"files": curmap[slug]}
         done_ct += 1
         log(f"[done {done_ct}/{len(todo)}] {slug}")

@@ -75,6 +75,30 @@ def citation_error(repo: Path, label_path: str, a: int, b: int, href: str) -> st
     return None
 
 
+def repair_citations(repo: Path, text: str) -> str:
+    """Clamp a citation whose end line overshoots the file's real length down to
+    that length -- the model's common 'to end of file' off-by-one -- rewriting the
+    label range and href together so they stay in sync. Citations that cannot be
+    made honest (missing file, start past EOF, inverted range, or a label/href
+    that already disagree) are left untouched for enforce_citations to block."""
+    def repl(m: "re.Match[str]") -> str:
+        label_path, a, b, href = m.group(1), int(m.group(2)), int(m.group(3)), m.group(4)
+        if citation_error(repo, label_path, a, b, href) is None:
+            return m.group(0)  # already honest
+        target = safe_repo_file(repo, label_path)
+        if target is None:
+            return m.group(0)  # unrepairable path -- let validation block
+        n = count_lines(target)
+        if not (1 <= a <= n < b):
+            return m.group(0)  # not a pure end-of-file overshoot
+        hm = _CITE_HREF.match(href.strip())
+        if not hm or hm.group(1) != label_path or int(hm.group(2)) != a \
+                or int(hm.group(3) or hm.group(2)) != b:
+            return m.group(0)  # label/href out of sync -- don't guess
+        return f"[{label_path}:L{a}-L{n}]({label_path}#L{a}-L{n})"
+    return FULL_CITATION_RE.sub(repl, text)
+
+
 def requires_evidence(md_text: str) -> bool:
     """A page needs a citation once it has prose beyond its title and the
     'Relevant source files' bullet list. List items are only exempt inside

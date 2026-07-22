@@ -33,7 +33,7 @@ document, no trailing commentary, no questions.
 
    Paths are repo-relative; line numbers are real. Multiple citations are comma
    separated, e.g.
-   `Sources: [src/main.py:L10-L42](src/main.py#L10-L42), [README.md:L1-L8](README.md#L1-L8)`.
+   `Sources: [path/to/file.py:L10-L42](path/to/file.py#L10-L42), [README.md:L1-L8](README.md#L1-L8)`. These paths are illustrative -- cite only files you actually read from this repo, never the example paths.
 
 ## Grounding rules
 
